@@ -6,13 +6,16 @@
 //
 
 import Testing
+@testable import SoundCheck
 
 struct SoundCheckTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+#if os(macOS)
+    @Test func discoversAtLeastOneOutputDevice() async throws {
+        let devices = AudioDeviceCatalog.fetchOutputDevices()
+        #expect(!devices.isEmpty)
+        #expect(devices.allSatisfy { !$0.uid.isEmpty && $0.outputChannelCount > 0 })
     }
+#endif
 
 }
