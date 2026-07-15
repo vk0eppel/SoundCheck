@@ -35,6 +35,7 @@ struct ChannelState: Equatable {
 struct ContentView: View {
     @State private var deviceCatalog = AudioDeviceCatalog()
     @State private var engineController = AudioEngineController()
+    @State private var settingsStore = SettingsStore()
 
     @State private var signalType: SignalType = .sine
     @State private var isRunning = false
@@ -60,6 +61,7 @@ struct ContentView: View {
                     $0.generatorKind = newValue.generatorKind
                     $0.running = false
                 }
+                settingsStore.update { $0.signalType = newValue }
             }
 
             onOffButton
@@ -87,23 +89,47 @@ struct ContentView: View {
         .padding(24)
         .frame(width: 420)
         .onAppear {
-            if selectedDeviceUID == nil {
+            let snapshot = settingsStore.snapshot
+            signalType = snapshot.signalType
+            frequencyHz = snapshot.frequencyHz
+            levelDbfs = snapshot.levelDbfs
+            engineController.renderCore.updateParameters {
+                $0.generatorKind = snapshot.signalType.generatorKind
+                $0.frequencyHz = snapshot.frequencyHz
+                $0.levelDbfs = snapshot.levelDbfs
+            }
+
+            if let savedUID = snapshot.selectedDeviceUID, deviceCatalog.devices.contains(where: { $0.uid == savedUID }) {
+                selectedDeviceUID = savedUID
+            } else {
                 selectedDeviceUID = deviceCatalog.devices.first?.uid
             }
             selectDeviceIfNeeded()
         }
-        .onChange(of: selectedDeviceUID) { _, _ in selectDeviceIfNeeded() }
+        .onChange(of: selectedDeviceUID) { _, newValue in
+            selectDeviceIfNeeded()
+            settingsStore.update { $0.selectedDeviceUID = newValue }
+        }
         .onChange(of: deviceCatalog.devices) { _, _ in handleDeviceListChanged() }
         .onChange(of: frequencyHz) { _, newValue in
             engineController.renderCore.updateParameters { $0.frequencyHz = newValue }
+            settingsStore.update { $0.frequencyHz = newValue }
         }
         .onChange(of: levelDbfs) { _, newValue in
             engineController.renderCore.updateParameters { $0.levelDbfs = newValue }
+            settingsStore.update { $0.levelDbfs = newValue }
         }
         .onChange(of: channels) { _, newValue in
             engineController.renderCore.updateParameters {
                 $0.channelMuted = newValue.map(\.muted)
                 $0.channelPhaseReversed = newValue.map(\.phaseReversed)
+            }
+            if let selectedDeviceUID {
+                settingsStore.update {
+                    $0.channelStatesByDeviceUID[selectedDeviceUID] = newValue.map {
+                        PersistedChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed)
+                    }
+                }
             }
         }
         .background(WindowAccessor(alwaysOnTop: alwaysOnTop))
@@ -247,8 +273,11 @@ struct ContentView: View {
     private func selectDeviceIfNeeded() {
         guard let device = selectedDevice else { return }
         engineController.selectDevice(device)
-        // Every channel defaults to muted, including channel 1, on device switch (ADR 0001).
-        channels = Array(repeating: ChannelState(), count: device.outputChannelCount)
+        // Restores this device's saved channel states, or all-muted if none are saved yet
+        // or the channel count no longer matches (ADR 0001) — SettingsStore already
+        // applies that fallback.
+        let savedStates = settingsStore.channelStates(forDeviceUID: device.uid, channelCount: device.outputChannelCount)
+        channels = savedStates.map { ChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed) }
     }
 
     private func handleDeviceListChanged() {

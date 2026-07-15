@@ -94,6 +94,8 @@ Remember last signal type, frequency, level, device, and per-channel mute/phase 
 
 Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under one `UserDefaults` key. Per-channel mute/phase is stored as `[deviceUID: [PersistedChannelState]]`, so switching back to a previously used device restores its exact channel states; an unrecognized device UID or a channel count mismatch (device swapped for a different one) falls back to all-muted, per [ADR 0001](adr/0001-all-channels-muted-by-default.md), rather than reusing stale state that doesn't match the new device's layout.
 
+`ContentView` loads the snapshot once on `onAppear` (falling back to the first available device if the saved device UID is no longer present) and pushes every subsequent change — signal type, frequency, level, selected device, per-channel mute/phase — straight back into `SettingsStore` via its own `onChange` handlers, so persistence needs no separate save action. This closes out V1: every control is wired to a live audio engine, a real device layer, and now persisted settings.
+
 ## Decisions log
 
 | Question | Decision |
