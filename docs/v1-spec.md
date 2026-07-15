@@ -85,6 +85,8 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 - **Per-channel mute/phase** is applied as a final per-channel pass inside the same render block (multiply each channel's samples by 0 if muted, ±1 for phase), not via a separate downstream node.
 - **Device binding.** Stays inside `AVAudioEngine`: the output node's underlying `AudioUnit` has its `kAudioOutputUnitProperty_CurrentDevice` overridden to target the user-selected Core Audio device, rather than bypassing `AVAudioEngine` for a raw `AUHAL` unit.
 
+`SignalRenderCore` implements the generators, ramp, and per-channel routing as a pure, AVAudioEngine-independent unit (sine via a phase accumulator; pink noise via Paul Kellett's refined filter over a fast xorshift64 PRNG; white noise via the same PRNG directly). It's deliberately decoupled from `AVAudioSourceNode` so it's unit-testable without a live audio device — wrapping its `render` function in an actual source node and binding that to the selected Core Audio device is #9/#10's job.
+
 ## Persistence
 Remember last signal type, frequency, level, device, and per-channel mute/phase across launches. Key device selection by device UID (not index), so it survives device list reordering.
 
