@@ -16,27 +16,34 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
     case white = "WHITE"
 
     var id: String { rawValue }
+
+    var generatorKind: GeneratorKind {
+        switch self {
+        case .sine: .sine
+        case .pink: .pink
+        case .white: .white
+        }
+    }
 }
 
-struct ChannelState {
+struct ChannelState: Equatable {
     var muted = true
     var phaseReversed = false
 }
 
-private let mockDevices: [(name: String, channelCount: Int)] = [
-    ("MOTU 8A", 8),
-    ("Built-in Output", 2),
-    ("Universal Audio Apollo", 4),
-]
-
+#if os(macOS)
 struct ContentView: View {
+    @State private var deviceCatalog = AudioDeviceCatalog()
+    @State private var engineController = AudioEngineController()
+
     @State private var signalType: SignalType = .sine
     @State private var isRunning = false
     @State private var alwaysOnTop = false
     @State private var frequencyHz: Double = 1000
     @State private var levelDbfs: Double = -20
-    @State private var selectedDeviceIndex = 0
-    @State private var channels: [ChannelState] = Array(repeating: ChannelState(), count: 8)
+    @State private var selectedDeviceUID: String?
+    @State private var channels: [ChannelState] = []
+    @State private var showsDeviceDisconnectedAlert = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -46,6 +53,14 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .onChange(of: signalType) { _, newValue in
+                // ADR 0003: signal-type switch forces a full stop, not a crossfade.
+                isRunning = false
+                engineController.renderCore.updateParameters {
+                    $0.generatorKind = newValue.generatorKind
+                    $0.running = false
+                }
+            }
 
             onOffButton
 
@@ -60,29 +75,49 @@ struct ContentView: View {
             channelRow
 
             HStack {
-                Text("48.0 kHz / 24-bit")
+                Text(formatReadout)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                #if os(macOS)
                 Toggle("Always on Top", isOn: $alwaysOnTop)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                #endif
             }
         }
         .padding(24)
         .frame(width: 420)
-        .onChange(of: selectedDeviceIndex) { _, _ in resetChannelsToMuted() }
-        .onAppear { resetChannelsToMuted() }
-        #if os(macOS)
+        .onAppear {
+            if selectedDeviceUID == nil {
+                selectedDeviceUID = deviceCatalog.devices.first?.uid
+            }
+            selectDeviceIfNeeded()
+        }
+        .onChange(of: selectedDeviceUID) { _, _ in selectDeviceIfNeeded() }
+        .onChange(of: deviceCatalog.devices) { _, _ in handleDeviceListChanged() }
+        .onChange(of: frequencyHz) { _, newValue in
+            engineController.renderCore.updateParameters { $0.frequencyHz = newValue }
+        }
+        .onChange(of: levelDbfs) { _, newValue in
+            engineController.renderCore.updateParameters { $0.levelDbfs = newValue }
+        }
+        .onChange(of: channels) { _, newValue in
+            engineController.renderCore.updateParameters {
+                $0.channelMuted = newValue.map(\.muted)
+                $0.channelPhaseReversed = newValue.map(\.phaseReversed)
+            }
+        }
         .background(WindowAccessor(alwaysOnTop: alwaysOnTop))
-        #endif
+        .alert("Output Device Disconnected", isPresented: $showsDeviceDisconnectedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The selected output device was disconnected. Playback has been stopped.")
+        }
     }
 
     private var onOffButton: some View {
         Button {
             isRunning.toggle()
+            engineController.renderCore.updateParameters { $0.running = isRunning }
         } label: {
             Text(isRunning ? "ON" : "OFF")
                 .font(.title.bold())
@@ -153,9 +188,9 @@ struct ContentView: View {
     }
 
     private var devicePicker: some View {
-        Picker("Output Device", selection: $selectedDeviceIndex) {
-            ForEach(mockDevices.indices, id: \.self) { index in
-                Text(mockDevices[index].name).tag(index)
+        Picker("Output Device", selection: $selectedDeviceUID) {
+            ForEach(deviceCatalog.devices) { device in
+                Text(device.name).tag(Optional(device.uid))
             }
         }
         .pickerStyle(.menu)
@@ -189,6 +224,18 @@ struct ContentView: View {
         .frame(height: 100)
     }
 
+    private var selectedDevice: AudioDeviceInfo? {
+        deviceCatalog.devices.first { $0.uid == selectedDeviceUID }
+    }
+
+    private var formatReadout: String {
+        guard let device = selectedDevice,
+            let sampleRate = AudioDeviceCatalog.nominalSampleRate(for: device.id),
+            let bitDepth = AudioDeviceCatalog.bitDepth(for: device.id)
+        else { return "—" }
+        return String(format: "%.1f kHz / %d-bit", sampleRate / 1000, bitDepth)
+    }
+
     private func stepFrequency(_ direction: Int) {
         frequencyHz = ThirdOctaveBands.step(from: frequencyHz, direction: direction)
     }
@@ -197,12 +244,26 @@ struct ContentView: View {
         levelDbfs = min(max(levelDbfs + Double(direction), -99), 0)
     }
 
-    private func resetChannelsToMuted() {
-        channels = Array(repeating: ChannelState(), count: mockDevices[selectedDeviceIndex].channelCount)
+    private func selectDeviceIfNeeded() {
+        guard let device = selectedDevice else { return }
+        engineController.selectDevice(device)
+        // Every channel defaults to muted, including channel 1, on device switch (ADR 0001).
+        channels = Array(repeating: ChannelState(), count: device.outputChannelCount)
+    }
+
+    private func handleDeviceListChanged() {
+        guard let selectedDeviceUID, !deviceCatalog.devices.contains(where: { $0.uid == selectedDeviceUID }) else {
+            return
+        }
+        if isRunning {
+            isRunning = false
+            engineController.renderCore.updateParameters { $0.running = false }
+            showsDeviceDisconnectedAlert = true
+        }
+        self.selectedDeviceUID = nil
     }
 }
 
-#if os(macOS)
 private struct WindowAccessor: NSViewRepresentable {
     let alwaysOnTop: Bool
 
@@ -219,6 +280,13 @@ private struct WindowAccessor: NSViewRepresentable {
     private func configure(_ view: NSView) {
         guard let window = view.window else { return }
         window.level = alwaysOnTop ? .floating : .normal
+    }
+}
+#else
+struct ContentView: View {
+    var body: some View {
+        Text("SoundCheck is macOS-only for now.")
+            .padding()
     }
 }
 #endif
