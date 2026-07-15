@@ -31,6 +31,33 @@ struct ChannelState: Equatable {
     var phaseReversed = false
 }
 
+/// SoundCheck's one signature accent — a warning-lamp amber, used only for the running
+/// state and its echoes (the phase toggle, the LED). Everything else stays semantic
+/// system color so light/dark appearance keeps following the system automatically.
+extension Color {
+    static let soundCheckAmber = Color(red: 0.90, green: 0.58, blue: 0.10)
+}
+
+/// A titled grouping, evoking a labeled zone on an instrument's front panel — not
+/// decoration: it separates "what's being generated" from "where it's going."
+private struct PanelSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .tracking(2)
+                .foregroundStyle(.secondary)
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 #if os(macOS)
 struct ContentView: View {
     @State private var deviceCatalog = AudioDeviceCatalog()
@@ -47,38 +74,46 @@ struct ContentView: View {
     @State private var showsDeviceDisconnectedAlert = false
 
     var body: some View {
-        VStack(spacing: 20) {
-            Picker("", selection: $signalType) {
-                ForEach(SignalType.allCases) { type in
-                    Text(type.rawValue).tag(type)
+        VStack(spacing: 16) {
+            PanelSection(title: "GENERATOR") {
+                VStack(spacing: 16) {
+                    Picker("", selection: $signalType) {
+                        ForEach(SignalType.allCases) { type in
+                            Text(type.rawValue).tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(.soundCheckAmber)
+                    .onChange(of: signalType) { _, newValue in
+                        // ADR 0003: signal-type switch forces a full stop, not a crossfade.
+                        isRunning = false
+                        engineController.renderCore.updateParameters {
+                            $0.generatorKind = newValue.generatorKind
+                            $0.running = false
+                        }
+                        settingsStore.update { $0.signalType = newValue }
+                    }
+
+                    onOffButton
+
+                    if signalType == .sine {
+                        frequencyControl
+                    }
+
+                    levelControl
                 }
             }
-            .pickerStyle(.segmented)
-            .onChange(of: signalType) { _, newValue in
-                // ADR 0003: signal-type switch forces a full stop, not a crossfade.
-                isRunning = false
-                engineController.renderCore.updateParameters {
-                    $0.generatorKind = newValue.generatorKind
-                    $0.running = false
+
+            PanelSection(title: "OUTPUT") {
+                VStack(spacing: 16) {
+                    devicePicker
+                    channelRow
                 }
-                settingsStore.update { $0.signalType = newValue }
             }
-
-            onOffButton
-
-            if signalType == .sine {
-                frequencyControl
-            }
-
-            levelControl
-
-            devicePicker
-
-            channelRow
 
             HStack {
                 Text(formatReadout)
-                    .font(.caption)
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Toggle("Always on Top", isOn: $alwaysOnTop)
@@ -86,7 +121,7 @@ struct ContentView: View {
                     .font(.caption)
             }
         }
-        .padding(24)
+        .padding(20)
         .frame(width: 420)
         .onAppear {
             let snapshot = settingsStore.snapshot
@@ -145,14 +180,25 @@ struct ContentView: View {
             isRunning.toggle()
             engineController.renderCore.updateParameters { $0.running = isRunning }
         } label: {
-            Text(isRunning ? "ON" : "OFF")
-                .font(.title.bold())
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(isRunning ? Color.soundCheckAmber : Color.black.opacity(0.25))
+                    .frame(width: 10, height: 10)
+                    .shadow(color: isRunning ? .soundCheckAmber : .clear, radius: 6)
+                Text(isRunning ? "ON" : "OFF")
+                    .font(.title2.weight(.bold))
+                    .tracking(3)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
         }
         .buttonStyle(.plain)
-        .background(isRunning ? Color.red : Color.secondary.opacity(0.25))
-        .foregroundStyle(isRunning ? .white : .primary)
+        .background(isRunning ? Color.soundCheckAmber.opacity(0.22) : Color.secondary.opacity(0.15))
+        .foregroundStyle(isRunning ? Color.soundCheckAmber : .primary)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isRunning ? Color.soundCheckAmber.opacity(0.6) : Color.clear, lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .keyboardShortcut(.space, modifiers: [])
     }
@@ -168,6 +214,7 @@ struct ContentView: View {
             .keyboardShortcut(.leftArrow, modifiers: [])
 
             TextField("Hz", value: $frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
+                .font(.system(.body, design: .monospaced))
                 .frame(width: 80)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
@@ -175,6 +222,7 @@ struct ContentView: View {
                     frequencyHz = min(max(newValue, 20), 20000)
                 }
             Text("Hz")
+                .foregroundStyle(.secondary)
 
             Button {
                 stepFrequency(1)
@@ -196,6 +244,7 @@ struct ContentView: View {
             .keyboardShortcut(.downArrow, modifiers: [])
 
             TextField("dBFS", value: $levelDbfs, format: .number.precision(.fractionLength(0...1)))
+                .font(.system(.body, design: .monospaced))
                 .frame(width: 70)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
@@ -203,6 +252,7 @@ struct ContentView: View {
                     levelDbfs = min(max(newValue, -99), 0)
                 }
             Text("dBFS")
+                .foregroundStyle(.secondary)
 
             Button {
                 adjustLevel(1)
@@ -227,8 +277,10 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 ForEach(channels.indices, id: \.self) { index in
                     VStack(spacing: 6) {
-                        Text("Ch \(index + 1)")
-                            .font(.caption)
+                        Text("CH \(index + 1)")
+                            .font(.caption2.weight(.semibold))
+                            .tracking(1)
+                            .foregroundStyle(.secondary)
                         Toggle(isOn: $channels[index].muted) {
                             Text("Mute")
                         }
@@ -239,7 +291,7 @@ struct ContentView: View {
                             Text("Ø")
                         }
                         .toggleStyle(.button)
-                        .tint(.orange)
+                        .tint(.soundCheckAmber)
                     }
                     .padding(8)
                     .background(Color.secondary.opacity(0.08))
