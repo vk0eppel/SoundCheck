@@ -10,7 +10,7 @@ import SwiftUI
 import AppKit
 #endif
 
-enum SignalType: String, CaseIterable, Identifiable {
+enum SignalType: String, CaseIterable, Identifiable, Codable {
     case sine = "SINE"
     case pink = "PINK"
     case white = "WHITE"

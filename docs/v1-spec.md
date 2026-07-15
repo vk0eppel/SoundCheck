@@ -88,6 +88,8 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 ## Persistence
 Remember last signal type, frequency, level, device, and per-channel mute/phase across launches. Key device selection by device UID (not index), so it survives device list reordering.
 
+Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under one `UserDefaults` key. Per-channel mute/phase is stored as `[deviceUID: [PersistedChannelState]]`, so switching back to a previously used device restores its exact channel states; an unrecognized device UID or a channel count mismatch (device swapped for a different one) falls back to all-muted, per [ADR 0001](adr/0001-all-channels-muted-by-default.md), rather than reusing stale state that doesn't match the new device's layout.
+
 ## Decisions log
 
 | Question | Decision |
