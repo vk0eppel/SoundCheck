@@ -44,11 +44,11 @@ Platform: macOS first, iOS portability considered but not designed for yet.
 Fixed-size utility panel, not resizable. Optional user-toggleable "always on top" (off by default) so the panel can stay visible while working elsewhere in the room.
 
 ### Signal type selector
-Segmented control, 3 states (Sine / Pink / White), all options visible at once. Switching while playing crossfades (~10-20ms) between old and new generator — no forced stop/start.
+Segmented control, 3 states (Sine / Pink / White), all options visible at once. Switching while playing **fully stops output** (drops to OFF) — for safety, to avoid unwanted noise from an in-flight transition. The user must press ON again to hear the newly selected signal. See [ADR 0003](adr/0003-signal-switch-forces-stop.md).
 
 ### Big On/Off switch
 - Spacebar toggles globally, except while a text field is actively being edited.
-- Fast, glitch-free ramp on start/stop (a few ms fade) to avoid clicks — matters since users are driving real speakers.
+- Linear ~15ms gain ramp on start/stop (applied inside the render block) to avoid clicks — matters since users are driving real speakers. Same ramp is used for the forced stop triggered by a signal-type switch.
 - State is shown via **both** color and an explicit text label ("ON"/"OFF") — never color alone. Running state uses red/amber (signals "hot"), not green, since this is the state where something is actively happening, not a "safe" state.
 
 ### Frequency field (sine only)
@@ -77,6 +77,14 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 ### Sample rate / bit depth display
 - Read-only, reflects the selected device's current nominal sample rate and stream format. Updates live if the format changes externally (e.g. via Audio MIDI Setup while SoundCheck is running).
 
+## Audio engine architecture
+
+- **No third-party DSP library.** Generators are hand-written `AVAudioSourceNode` render blocks. See [ADR 0002](adr/0002-custom-render-blocks-no-dsp-library.md).
+- **One persistent source node.** A single `AVAudioSourceNode` is attached to the engine; its render block delegates to an atomically-swappable generator reference. Only one generator is ever live — no multi-node mixing, since signal-type switch forces a full stop first (ADR 0003) rather than crossfading.
+- **Cross-thread parameter passing.** UI-driven changes (frequency, level, mute/phase, on/off, generator swap) are written to a plain parameter struct guarded by `OSAllocatedUnfairLock`. The render block takes the same lock to snapshot parameters at the top of each call — brief, uncontended, real-time-safe; no third-party atomics package.
+- **Per-channel mute/phase** is applied as a final per-channel pass inside the same render block (multiply each channel's samples by 0 if muted, ±1 for phase), not via a separate downstream node.
+- **Device binding.** Stays inside `AVAudioEngine`: the output node's underlying `AudioUnit` has its `kAudioOutputUnitProperty_CurrentDevice` overridden to target the user-selected Core Audio device, rather than bypassing `AVAudioEngine` for a raw `AUHAL` unit.
+
 ## Persistence
 Remember last signal type, frequency, level, device, and per-channel mute/phase across launches. Key device selection by device UID (not index), so it survives device list reordering.
 
@@ -84,7 +92,7 @@ Remember last signal type, frequency, level, device, and per-channel mute/phase 
 
 | Question | Decision |
 |---|---|
-| Signal switch while playing | Crossfade, not forced stop |
+| Signal switch while playing | **Superseded** — now forces full stop to OFF, see [ADR 0003](adr/0003-signal-switch-forces-stop.md) |
 | Level step size | 1dB |
 | Level floor | -99 dBFS |
 | Device disconnect while playing | Auto-stop + alert |
@@ -97,6 +105,12 @@ Remember last signal type, frequency, level, device, and per-channel mute/phase 
 | Level field precision | Whole dB via arrows/buttons; decimals allowed via free-text entry |
 | Many-channel layout | Horizontal scroll within fixed-height row, not wrapping |
 | Channel mute default | All channels muted by default, including channel 1 — see [ADR 0001](adr/0001-all-channels-muted-by-default.md) |
+| DSP library vs custom | Custom `AVAudioSourceNode` render blocks, no third-party library — see [ADR 0002](adr/0002-custom-render-blocks-no-dsp-library.md) |
+| Render graph topology | One persistent source node, swappable generator reference — no multi-node mixing |
+| UI-to-audio-thread parameter passing | Plain struct guarded by `OSAllocatedUnfairLock` |
+| Start/stop ramp curve/duration | Linear, ~15ms, inside the render block |
+| Per-channel mute/phase application point | Inside the same render block, final per-channel pass |
+| Output device binding | `AVAudioEngine` output node, `AudioUnit` `kAudioOutputUnitProperty_CurrentDevice` override |
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.
