@@ -29,15 +29,11 @@ private let mockDevices: [(name: String, channelCount: Int)] = [
     ("Universal Audio Apollo", 4),
 ]
 
-private let mockFrequencySteps: [Int] = [
-    200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000,
-]
-
 struct ContentView: View {
     @State private var signalType: SignalType = .sine
     @State private var isRunning = false
     @State private var alwaysOnTop = false
-    @State private var frequencyHz = 1000
+    @State private var frequencyHz: Double = 1000
     @State private var levelDbfs: Double = -20
     @State private var selectedDeviceIndex = 0
     @State private var channels: [ChannelState] = Array(repeating: ChannelState(), count: 8)
@@ -110,7 +106,7 @@ struct ContentView: View {
             }
             .keyboardShortcut(.leftArrow, modifiers: [])
 
-            TextField("Hz", value: $frequencyHz, format: .number)
+            TextField("Hz", value: $frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
                 .frame(width: 80)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
@@ -194,9 +190,7 @@ struct ContentView: View {
     }
 
     private func stepFrequency(_ direction: Int) {
-        guard let currentIndex = mockFrequencySteps.lastIndex(where: { $0 <= frequencyHz }) else { return }
-        let newIndex = min(max(currentIndex + direction, 0), mockFrequencySteps.count - 1)
-        frequencyHz = mockFrequencySteps[newIndex]
+        frequencyHz = ThirdOctaveBands.step(from: frequencyHz, direction: direction)
     }
 
     private func adjustLevel(_ direction: Int) {

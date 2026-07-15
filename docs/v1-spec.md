@@ -53,7 +53,7 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 
 ### Frequency field (sine only)
 - Range 20Hz-20kHz, free text entry, default 1000Hz.
-- Whole Hz only — typed input is rounded to the nearest integer Hz on commit. (Internal oscillator still uses full float precision; this is a display/entry rule only.)
+- Whole Hz only — typed input is rounded to the nearest integer Hz on commit. (Internal oscillator still uses full float precision; this is a display/entry rule only.) Exception: the 1/3-octave band at 31.5Hz displays as "31.5Hz", not rounded to 32 — it's the fixed ISO 266 standard label, not a typed value.
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
 - Typed free-text values don't snap to the 1/3-octave grid; arrows are the only thing that snaps.
 - Clamp to range on commit, reject non-numeric input.
