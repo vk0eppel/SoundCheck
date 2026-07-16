@@ -172,18 +172,26 @@ struct ContentView: View {
                     onOffButton
 
                     // Reserved even when not applicable (not conditionally removed) so the
-                    // fixed-size window doesn't reflow when switching signal type.
-                    frequencyControl
-                        .opacity(signalType == .sine ? 1 : 0)
-                        .disabled(signalType != .sine)
-
+                    // fixed-size window doesn't reflow when switching signal type or Pink
+                    // sub-mode. Pink's mode selector sits right under on/off; the frequency
+                    // slot just above Level is shared between Sine's frequency field and
+                    // Pink 1/3-Octave's band stepper, so "the frequency-like control" always
+                    // lives in the same spot regardless of which signal/mode is active.
                     pinkNoiseModeControl
                         .opacity(signalType == .pink ? 1 : 0)
                         .disabled(signalType != .pink)
 
-                    pinkNoiseModeDetailControl
-                        .opacity(signalType == .pink ? 1 : 0)
-                        .disabled(signalType != .pink)
+                    bandLimitedDetailControl
+                        .opacity(signalType == .pink && pinkNoiseModeFamily == .bandLimited ? 1 : 0)
+                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .bandLimited))
+
+                    frequencyControl
+                        .opacity(signalType == .sine ? 1 : 0)
+                        .disabled(signalType != .sine)
+
+                    thirdOctaveBandControl
+                        .opacity(signalType == .pink && pinkNoiseModeFamily == .thirdOctave ? 1 : 0)
+                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .thirdOctave))
 
                     levelControl
                 }
@@ -367,11 +375,10 @@ struct ContentView: View {
         .pickerStyle(.segmented)
     }
 
-    /// Always renders all three sub-controls (band-limited preset picker, manual range
-    /// fields, 1/3-octave band stepper), each independently opacity/disabled-gated — same
-    /// "always reserve, never remove" principle as `frequencyControl`, so the fixed-size
-    /// window never reflows regardless of which Pink sub-mode is active.
-    private var pinkNoiseModeDetailControl: some View {
+    /// The preset picker + manual range fields, reserved (opacity/disabled, not removed)
+    /// even when Manual isn't the selected preset — same principle as `frequencyControl`.
+    /// The call site already gates this whole control on Pink + Band-limited.
+    private var bandLimitedDetailControl: some View {
         HStack {
             Picker("", selection: $bandLimitedPresetSelection) {
                 ForEach(BandLimitedPresetSelection.allCases) { preset in
@@ -379,16 +386,10 @@ struct ContentView: View {
                 }
             }
             .pickerStyle(.menu)
-            .opacity(pinkNoiseModeFamily == .bandLimited ? 1 : 0)
-            .disabled(pinkNoiseModeFamily != .bandLimited)
 
             manualRangeFields
-                .opacity(pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual ? 1 : 0)
-                .disabled(!(pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual))
-
-            thirdOctaveBandControl
-                .opacity(pinkNoiseModeFamily == .thirdOctave ? 1 : 0)
-                .disabled(pinkNoiseModeFamily != .thirdOctave)
+                .opacity(bandLimitedPresetSelection == .manual ? 1 : 0)
+                .disabled(bandLimitedPresetSelection != .manual)
         }
     }
 
