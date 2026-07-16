@@ -64,6 +64,14 @@ private enum ManualRangeField: Hashable {
     case high
 }
 
+/// Identifies which of the Frequency/Level/Duration fields currently has focus, so Return
+/// can resign it and hand keyboard focus back to the app (see `editableFieldFocus`).
+private enum EditableField: Hashable {
+    case frequency
+    case level
+    case duration
+}
+
 struct ChannelState: Equatable {
     var muted = true
     var phaseReversed = false
@@ -156,6 +164,13 @@ struct ContentView: View {
     @State private var thirdOctaveHzDraft: Double = 1000
     @FocusState private var thirdOctaveFieldFocused: Bool
     @State private var sweepDurationSeconds: Double = 10
+    // Frequency/Level/Duration apply live per keystroke (no commit-on-blur step, unlike
+    // the manual-range/1/3-octave fields above), but still need focus tracking: without
+    // it, pressing Return has nothing to resign, and the field keeps first-responder
+    // status indefinitely -- silently swallowing the space/arrow-key shortcuts below
+    // (AppKit routes those to the focused text field, not up to the app) until the user
+    // manually clicks elsewhere.
+    @FocusState private var editableFieldFocus: EditableField?
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
@@ -361,9 +376,11 @@ struct ContentView: View {
                 .frame(width: 80)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
+                .focused($editableFieldFocus, equals: .frequency)
                 .onChange(of: frequencyHz) { _, newValue in
                     frequencyHz = min(max(newValue, 20), 20000)
                 }
+                .onSubmit { editableFieldFocus = nil }
             Text("Hz")
                 .foregroundStyle(.secondary)
 
@@ -407,7 +424,10 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
                 .focused($thirdOctaveFieldFocused)
-                .onSubmit { commitThirdOctaveDraft() }
+                .onSubmit {
+                    commitThirdOctaveDraft()
+                    thirdOctaveFieldFocused = false
+                }
             Text("Hz")
                 .foregroundStyle(.secondary)
 
@@ -505,7 +525,10 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
                 .focused($manualRangeFieldFocus, equals: .low)
-                .onSubmit { commitManualLowHz() }
+                .onSubmit {
+                    commitManualLowHz()
+                    manualRangeFieldFocus = nil
+                }
             Text("–")
                 .foregroundStyle(.secondary)
             TextField("High", value: $manualHighHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
@@ -514,7 +537,10 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
                 .focused($manualRangeFieldFocus, equals: .high)
-                .onSubmit { commitManualHighHz() }
+                .onSubmit {
+                    commitManualHighHz()
+                    manualRangeFieldFocus = nil
+                }
         }
         .onChange(of: manualRangeFieldFocus) { oldValue, newValue in
             if oldValue == .low && newValue != .low { commitManualLowHz() }
@@ -538,9 +564,11 @@ struct ContentView: View {
                 .frame(width: 70)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
+                .focused($editableFieldFocus, equals: .duration)
                 .onChange(of: sweepDurationSeconds) { _, newValue in
                     sweepDurationSeconds = min(max(newValue, 1), 60)
                 }
+                .onSubmit { editableFieldFocus = nil }
             Text("s")
                 .foregroundStyle(.secondary)
 
@@ -576,9 +604,11 @@ struct ContentView: View {
                 .frame(width: 70)
                 .multilineTextAlignment(.center)
                 .textFieldStyle(.roundedBorder)
+                .focused($editableFieldFocus, equals: .level)
                 .onChange(of: levelDbfs) { _, newValue in
                     levelDbfs = min(max(newValue, -99), 0)
                 }
+                .onSubmit { editableFieldFocus = nil }
             Text("dBFS")
                 .foregroundStyle(.secondary)
 
