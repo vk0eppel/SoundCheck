@@ -245,6 +245,8 @@ struct ContentView: View {
         }
         .padding(20)
         .frame(width: 420)
+        .contentShape(Rectangle())
+        .onTapGesture { dismissFieldFocus() }
         .onAppear {
             let snapshot = settingsStore.snapshot
             signalType = snapshot.signalType
@@ -752,6 +754,17 @@ struct ContentView: View {
 
     private func adjustSweepDuration(_ direction: Int) {
         sweepDurationSeconds = min(max(sweepDurationSeconds + Double(direction), 1), 60)
+    }
+
+    /// Clicking a non-control area (panel background, labels) doesn't resign a focused
+    /// `NSTextField`'s first-responder status on its own -- unlike iOS, AppKit only moves
+    /// focus when another focusable control claims it, so without this the field (and the
+    /// space/arrow shortcuts it silently swallows) stays stuck until the user happens to
+    /// click a different field or button. Wired to a tap gesture on the whole window body.
+    private func dismissFieldFocus() {
+        editableFieldFocus = nil
+        manualRangeFieldFocus = nil
+        thirdOctaveFieldFocused = false
     }
 
     private func selectDeviceIfNeeded() {
