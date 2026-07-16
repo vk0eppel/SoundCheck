@@ -30,7 +30,7 @@ The Xcode project's `SUPPORTED_PLATFORMS` includes iOS/visionOS from the templat
 
 ## Planning workflow
 
-Feature work was planned on GitHub Issues using the [wayfinder skill](https://github.com/vk0eppel/SoundCheck/issues/1) convention: a map issue (labeled `wayfinder:map`) indexes child ticket issues (`wayfinder:research`/`wayfinder:prototype`/`wayfinder:grilling`/`wayfinder:task`), with native GitHub sub-issue and blocking relationships expressing the dependency graph. The V1 map is closed (destination reached). The [V2 map](https://github.com/vk0eppel/SoundCheck/issues/12) (band-limited noise, 1/3-octave noise, sweeps, square wave) is in progress: band-limited and 1/3-octave pink noise are done and shipped as Pink sub-modes; sine sweep and square wave are still being built out (see the map for current ticket status). Use this convention again for V3 or any other non-trivial effort.
+Feature work was planned on GitHub Issues using the [wayfinder skill](https://github.com/vk0eppel/SoundCheck/issues/1) convention: a map issue (labeled `wayfinder:map`) indexes child ticket issues (`wayfinder:research`/`wayfinder:prototype`/`wayfinder:grilling`/`wayfinder:task`), with native GitHub sub-issue and blocking relationships expressing the dependency graph. The V1 map is closed (destination reached). The [V2 map](https://github.com/vk0eppel/SoundCheck/issues/12) (band-limited noise, 1/3-octave noise, sweeps, square wave) is closed (destination reached): band-limited and 1/3-octave pink noise shipped as Pink sub-modes, sine sweep and square wave shipped as new top-level `SignalType` cases. Use this convention again for V3 or any other non-trivial effort.
 
 ## Architecture
 
