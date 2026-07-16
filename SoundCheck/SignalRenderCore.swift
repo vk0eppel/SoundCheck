@@ -76,6 +76,10 @@ final class PinkNoiseGenerator: SignalGenerator {
         white = WhiteNoiseGenerator(seed: seed)
     }
 
+    /// #22/#23 will filter here based on `parameters.pinkNoiseMode` (a band-limited
+    /// Biquad cascade / a 1/3-octave Biquad bandpass, respectively). Neither mode applies
+    /// any filtering yet, so pink noise stays bit-identical to V1 regardless of the
+    /// selected mode.
     func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
         let whiteSample = white.nextSample(parameters: parameters, sampleRate: sampleRate)
         b0 = 0.99886 * b0 + whiteSample * 0.0555179
@@ -98,6 +102,18 @@ enum GeneratorKind: Equatable, Sendable {
     case white
 }
 
+/// A sub-mode of the Pink generator, not a `GeneratorKind` of its own — band-limited and
+/// 1/3-octave noise are both still "Pink," just spectrally shaped. `.bandLimited` and
+/// `.thirdOctave` carry no configuration yet; #22 and #23 respectively will add it
+/// (e.g. `case bandLimited(BandLimitedPreset)`) once they give each mode real filtering.
+enum PinkNoiseMode: String, Equatable, Sendable, Codable, CaseIterable, Identifiable {
+    case fullRange = "FULL-RANGE"
+    case bandLimited = "BAND-LIMITED"
+    case thirdOctave = "1/3-OCTAVE"
+
+    var id: String { rawValue }
+}
+
 struct RenderParameters: Equatable, Sendable {
     var generatorKind: GeneratorKind = .sine
     var frequencyHz: Double = 1000
@@ -105,6 +121,7 @@ struct RenderParameters: Equatable, Sendable {
     var running: Bool = false
     var channelMuted: [Bool] = []
     var channelPhaseReversed: [Bool] = []
+    var pinkNoiseMode: PinkNoiseMode = .fullRange
 }
 
 // MARK: - Render core

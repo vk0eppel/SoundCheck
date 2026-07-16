@@ -35,6 +35,7 @@ struct SoundCheckTests {
             $0.frequencyHz = 630
             $0.levelDbfs = -12.5
             $0.selectedDeviceUID = "device-uid-1"
+            $0.pinkNoiseMode = .bandLimited
             $0.channelStatesByDeviceUID["device-uid-1"] = [
                 PersistedChannelState(muted: false, phaseReversed: true),
                 PersistedChannelState(muted: true, phaseReversed: false),
@@ -45,6 +46,7 @@ struct SoundCheckTests {
         #expect(secondLaunch.snapshot == firstLaunch.snapshot)
         #expect(secondLaunch.snapshot.signalType == .pink)
         #expect(secondLaunch.snapshot.selectedDeviceUID == "device-uid-1")
+        #expect(secondLaunch.snapshot.pinkNoiseMode == .bandLimited)
     }
 
     @MainActor
@@ -167,6 +169,30 @@ struct SoundCheckTests {
         let actualRatio = minus20RMS / fullScaleRMS
 
         #expect(abs(actualRatio - 0.1) < 0.01)
+    }
+
+    @Test func pinkNoiseModeDoesNotYetAlterOutput() async throws {
+        let sampleRate = 48000.0
+        let frameCount = 4800
+
+        func render(mode: PinkNoiseMode) -> [Float] {
+            let core = SignalRenderCore()
+            core.updateParameters {
+                $0.generatorKind = .pink
+                $0.levelDbfs = 0
+                $0.running = true
+                $0.channelMuted = [false]
+                $0.channelPhaseReversed = [false]
+                $0.pinkNoiseMode = mode
+            }
+            return Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)[0]
+        }
+
+        // No mode filters yet (that's #22/#23's job) -- every mode must render
+        // bit-identically to .fullRange, i.e. unchanged from today's V1 pink noise.
+        let fullRange = render(mode: .fullRange)
+        #expect(render(mode: .bandLimited) == fullRange)
+        #expect(render(mode: .thirdOctave) == fullRange)
     }
 
     @Test func biquadLowpassPassesBelowAndAttenuatesAboveCutoff() async throws {

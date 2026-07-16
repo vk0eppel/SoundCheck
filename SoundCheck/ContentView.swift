@@ -100,6 +100,7 @@ struct ContentView: View {
     @State private var alwaysOnTop = false
     @State private var frequencyHz: Double = 1000
     @State private var levelDbfs: Double = -20
+    @State private var pinkNoiseMode: PinkNoiseMode = .fullRange
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
@@ -133,6 +134,10 @@ struct ContentView: View {
                         .opacity(signalType == .sine ? 1 : 0)
                         .disabled(signalType != .sine)
 
+                    pinkNoiseModeControl
+                        .opacity(signalType == .pink ? 1 : 0)
+                        .disabled(signalType != .pink)
+
                     levelControl
                 }
             }
@@ -161,10 +166,12 @@ struct ContentView: View {
             signalType = snapshot.signalType
             frequencyHz = snapshot.frequencyHz
             levelDbfs = snapshot.levelDbfs
+            pinkNoiseMode = snapshot.pinkNoiseMode
             engineController.renderCore.updateParameters {
                 $0.generatorKind = snapshot.signalType.generatorKind
                 $0.frequencyHz = snapshot.frequencyHz
                 $0.levelDbfs = snapshot.levelDbfs
+                $0.pinkNoiseMode = snapshot.pinkNoiseMode
             }
 
             if let savedUID = snapshot.selectedDeviceUID, deviceCatalog.devices.contains(where: { $0.uid == savedUID }) {
@@ -186,6 +193,12 @@ struct ContentView: View {
         .onChange(of: levelDbfs) { _, newValue in
             engineController.renderCore.updateParameters { $0.levelDbfs = newValue }
             settingsStore.update { $0.levelDbfs = newValue }
+        }
+        .onChange(of: pinkNoiseMode) { _, newValue in
+            // Applies live, same as frequency/level — only a signal-*type* switch
+            // forces a full stop (ADR 0003), not a change within Pink's sub-modes.
+            engineController.renderCore.updateParameters { $0.pinkNoiseMode = newValue }
+            settingsStore.update { $0.pinkNoiseMode = newValue }
         }
         .onChange(of: channels) { _, newValue in
             engineController.renderCore.updateParameters {
@@ -275,6 +288,15 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+
+    private var pinkNoiseModeControl: some View {
+        Picker("", selection: $pinkNoiseMode) {
+            ForEach(PinkNoiseMode.allCases) { mode in
+                Text(mode.rawValue).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
     }
 
     private var levelControl: some View {

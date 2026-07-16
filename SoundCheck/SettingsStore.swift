@@ -26,6 +26,7 @@ struct SettingsSnapshot: Codable, Equatable {
     var levelDbfs: Double = -20
     var selectedDeviceUID: String?
     var channelStatesByDeviceUID: [String: [PersistedChannelState]] = [:]
+    var pinkNoiseMode: PinkNoiseMode = .fullRange
 }
 
 /// Persists SoundCheck's last-used settings across launches, per docs/v1-spec.md's
