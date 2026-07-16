@@ -208,12 +208,6 @@ struct ContentView: View {
     private var frequencyControl: some View {
         HStack {
             Text("Frequency")
-            Button {
-                stepFrequency(-1)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .keyboardShortcut(.leftArrow, modifiers: [])
 
             TextField("Hz", value: $frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
@@ -226,24 +220,28 @@ struct ContentView: View {
             Text("Hz")
                 .foregroundStyle(.secondary)
 
-            Button {
-                stepFrequency(1)
-            } label: {
-                Image(systemName: "chevron.right")
+            // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
+            HStack(spacing: 4) {
+                Button {
+                    stepFrequency(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+
+                Button {
+                    stepFrequency(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
             }
-            .keyboardShortcut(.rightArrow, modifiers: [])
         }
     }
 
     private var levelControl: some View {
         HStack {
             Text("Level")
-            Button {
-                adjustLevel(-1)
-            } label: {
-                Image(systemName: "minus")
-            }
-            .keyboardShortcut(.downArrow, modifiers: [])
 
             TextField("dBFS", value: $levelDbfs, format: .number.precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
@@ -256,12 +254,25 @@ struct ContentView: View {
             Text("dBFS")
                 .foregroundStyle(.secondary)
 
-            Button {
-                adjustLevel(1)
-            } label: {
-                Image(systemName: "plus")
+            // + above -, matching the up-arrow/down-arrow keyboard shortcuts below.
+            VStack(spacing: 4) {
+                Button {
+                    adjustLevel(1)
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 20)
+                }
+                .keyboardShortcut(.upArrow, modifiers: [])
+
+                Button {
+                    adjustLevel(-1)
+                } label: {
+                    Image(systemName: "minus")
+                        .frame(width: 20)
+                }
+                .keyboardShortcut(.downArrow, modifiers: [])
             }
-            .keyboardShortcut(.upArrow, modifiers: [])
+            .buttonStyle(.bordered)
         }
     }
 
