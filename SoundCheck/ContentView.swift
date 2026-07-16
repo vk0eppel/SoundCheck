@@ -19,6 +19,7 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
     case pink = "PINK"
     case white = "WHITE"
     case sweep = "SWEEP"
+    case square = "SQUARE"
 
     var id: String { rawValue }
 
@@ -28,6 +29,7 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
         case .pink: .pink
         case .white: .white
         case .sweep: .sweep
+        case .square: .square
         }
     }
 }
@@ -346,6 +348,7 @@ struct ContentView: View {
         case .pink: pinkNoiseModeFamily == .bandLimited || pinkNoiseModeFamily == .thirdOctave
         case .white: false
         case .sweep: true
+        case .square: true
         }
     }
 

@@ -41,6 +41,46 @@ final class SineGenerator: SignalGenerator {
     }
 }
 
+/// A fixed-50%-duty-cycle square wave, band-limited via PolyBLEP polynomial correction
+/// applied in a narrow window around each of its two discontinuities per cycle (rising at
+/// phase 0, falling at phase 0.5) — a naive `sign()`-based square aliases at generation
+/// time (its infinite odd-harmonic series folds harmonics above Nyquist back into the
+/// audible range), which no filter applied afterward can undo. See docs/v1-spec.md's "V2
+/// addendum: square wave" for why PolyBLEP was chosen over additive synthesis or
+/// oversampling. Implements `SignalGenerator` in its narrowest form (frequency + sample
+/// rate only, default no-op `reset()`) — per ADR 0004's note, the protocol's widening
+/// anticipated square wave needing a duty-cycle parameter, but duty cycle ended up fixed,
+/// so this generator doesn't end up exercising that widened surface.
+final class SquareGenerator: SignalGenerator {
+    private var phase: Double = 0 // normalized to [0, 1), unlike SineGenerator's [0, 2π) phase
+
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        let dt = parameters.frequencyHz / sampleRate
+        var sample = phase < 0.5 ? 1.0 : -1.0
+        sample += Self.polyBLEP(phase, dt)
+        sample -= Self.polyBLEP((phase + 0.5).truncatingRemainder(dividingBy: 1), dt)
+
+        phase += dt
+        if phase >= 1 { phase -= 1 }
+
+        return sample
+    }
+
+    /// Välimäki & Huovilainen's polynomial band-limited step: a 2nd-order polynomial
+    /// approximation of the ideal band-limited step, non-zero only within one sample
+    /// period's width (`dt`) of a discontinuity at `t == 0`.
+    private static func polyBLEP(_ t: Double, _ dt: Double) -> Double {
+        if t < dt {
+            let x = t / dt
+            return x + x - x * x - 1
+        } else if t > 1 - dt {
+            let x = (t - 1) / dt
+            return x * x + x + x + 1
+        }
+        return 0
+    }
+}
+
 /// A continuous logarithmic sweep across the app's fixed 20Hz-20kHz range — see
 /// docs/v1-spec.md's "V2 addendum: sine sweep". `elapsedSamples` is audio-thread-only
 /// state tracking position within the configured `sweepDurationSeconds`; instantaneous
@@ -165,6 +205,7 @@ enum GeneratorKind: Equatable, Sendable {
     case pink
     case white
     case sweep
+    case square
 }
 
 /// A sub-mode of the Pink generator, not a `GeneratorKind` of its own — band-limited and
@@ -328,6 +369,7 @@ final class SignalRenderCore: @unchecked Sendable {
     nonisolated(unsafe) private let pinkGenerator = PinkNoiseGenerator()
     nonisolated(unsafe) private let whiteGenerator = WhiteNoiseGenerator()
     nonisolated(unsafe) private let sweepGenerator = SweepGenerator()
+    nonisolated(unsafe) private let squareGenerator = SquareGenerator()
     nonisolated(unsafe) private var rampGain: Double = 0
     // Only adopted from `RenderParameters.generatorKind` once `rampGain` reaches silence —
     // otherwise a signal-type switch mid-ramp would audibly fade out the *new* generator
@@ -385,6 +427,7 @@ final class SignalRenderCore: @unchecked Sendable {
         case .pink: pinkGenerator
         case .white: whiteGenerator
         case .sweep: sweepGenerator
+        case .square: squareGenerator
         }
     }
 

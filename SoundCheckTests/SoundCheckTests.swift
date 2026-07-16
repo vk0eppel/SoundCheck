@@ -313,6 +313,100 @@ struct SoundCheckTests {
         #expect(measured < 40)
     }
 
+    @Test func squareWaveHasApproximatelyFiftyPercentDutyCycle() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        core.updateParameters {
+            $0.generatorKind = .square
+            $0.frequencyHz = 1000
+            $0.levelDbfs = 0
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        // Adopting a newly-selected generatorKind only happens inside `render()`, at the
+        // instant it observes `rampGain == 0` -- see `sweepGeneratorFollowsLogarithmicCurve`
+        // for why this silent frame must precede flipping `running`.
+        _ = Self.renderToArrays(core, frameCount: 1, channelCount: 1, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+
+        let rampFrames = Int(0.02 * sampleRate)
+        let channels = Self.renderToArrays(core, frameCount: rampFrames + 48000, channelCount: 1, sampleRate: sampleRate)
+        let settled = channels[0].suffix(48000)
+
+        // A fixed 50% duty cycle spends equal time at +1 and -1, so the mean should sit
+        // close to zero -- PolyBLEP's edge correction is symmetric (adds near the rising
+        // edge, subtracts near the falling edge) so it doesn't skew this.
+        let mean = settled.reduce(Float(0), +) / Float(settled.count)
+        #expect(abs(mean) < 0.01)
+    }
+
+    @Test func squareWaveAmplitudeStaysWithinLevelBounds() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        core.updateParameters {
+            $0.generatorKind = .square
+            $0.frequencyHz = 1000
+            $0.levelDbfs = -6
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        // See `sweepGeneratorFollowsLogarithmicCurve` for why this precedes flipping `running`.
+        _ = Self.renderToArrays(core, frameCount: 1, channelCount: 1, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+
+        let rampFrames = Int(0.02 * sampleRate)
+        let channels = Self.renderToArrays(core, frameCount: rampFrames + 4800, channelCount: 1, sampleRate: sampleRate)
+        let settled = channels[0].suffix(4800)
+
+        let levelLinear = Float(pow(10, -6.0 / 20))
+        #expect(settled.allSatisfy { abs($0) <= levelLinear + 0.001 })
+    }
+
+    @Test func polyBLEPSmoothsEdgesComparedToANaiveSquareAtHighFrequency() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        let frequency = 16000.0
+        core.updateParameters {
+            $0.generatorKind = .square
+            $0.frequencyHz = frequency
+            $0.levelDbfs = 0
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        // See `sweepGeneratorFollowsLogarithmicCurve` for why this precedes flipping `running`.
+        _ = Self.renderToArrays(core, frameCount: 1, channelCount: 1, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+
+        let rampFrames = Int(0.02 * sampleRate)
+        let channels = Self.renderToArrays(core, frameCount: rampFrames + 4800, channelCount: 1, sampleRate: sampleRate)
+        let bandLimited = channels[0].suffix(4800).map(Double.init)
+
+        // A naive sign()-based square at the same frequency, computed inline (not via
+        // SquareGenerator) -- the aliased reference PolyBLEP is meant to improve on.
+        var naivePhase = 0.0
+        let dt = frequency / sampleRate
+        var naive: [Double] = []
+        for _ in 0..<bandLimited.count {
+            naive.append(naivePhase < 0.5 ? 1 : -1)
+            naivePhase += dt
+            if naivePhase >= 1 { naivePhase -= 1 }
+        }
+
+        // "Smoother transitions" measured as total squared second-difference (curvature) --
+        // a naive square's instantaneous jumps have far higher curvature at each edge than
+        // PolyBLEP's polynomial-corrected ones.
+        func roughness(_ samples: [Double]) -> Double {
+            var total = 0.0
+            for i in 1..<(samples.count - 1) {
+                let secondDifference = samples[i + 1] - 2 * samples[i] + samples[i - 1]
+                total += secondDifference * secondDifference
+            }
+            return total
+        }
+
+        #expect(roughness(bandLimited) < roughness(naive))
+    }
+
     @Test func bandLimitedFilterChainRealizesEachPresetsEdges() async throws {
         let sampleRate = 48000.0
 
