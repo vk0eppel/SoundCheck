@@ -258,6 +258,38 @@ struct SoundCheckTests {
     /// `thirdOctaveLevelCompensationGain` keeps measured RMS close to full-range's at a
     /// fixed Level. A real biquad's finite transition-band roll-off (not brick-wall) means
     /// this can't match exactly, hence the generous tolerance.
+    /// Kellett's raw pink noise construction has a much higher crest factor than White's
+    /// uniform distribution, so without `pinkLevelCompensationGain` its RMS (perceived
+    /// loudness) measured far below White's at the same `levelDbfs` -- audibly "not as loud
+    /// as the rest." Verifies the makeup gain brings full-range Pink's RMS in line with
+    /// White's at a fixed Level.
+    @Test func fullRangePinkRMSMatchesWhiteRMSAtTheSameLevel() async throws {
+        let sampleRate = 48000.0
+        let frameCount = 96000
+        let levelDbfs = -12.0
+
+        func rms(generatorKind: GeneratorKind) -> Double {
+            let core = SignalRenderCore()
+            core.updateParameters {
+                $0.generatorKind = generatorKind
+                $0.levelDbfs = levelDbfs
+                $0.running = true
+                $0.pinkNoiseMode = .fullRange
+                $0.channelMuted = [false]
+                $0.channelPhaseReversed = [false]
+            }
+            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+            let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
+            let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
+            return meanSquare.squareRoot()
+        }
+
+        let whiteRMS = rms(generatorKind: .white)
+        let pinkRMS = rms(generatorKind: .pink)
+
+        #expect(abs(20 * log10(pinkRMS / whiteRMS)) < 1)
+    }
+
     @Test func filteredPinkModesMatchFullRangeRMSAtTheSameLevel() async throws {
         let sampleRate = 48000.0
         let frameCount = 96000

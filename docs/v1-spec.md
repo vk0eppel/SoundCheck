@@ -142,6 +142,8 @@ Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under o
 | Frequency control reflow on signal-type switch | Space always reserved (hidden + disabled, not removed) so the fixed-size window never reflows |
 | Stepper button placement | Grouped to the right of the value, ordered to match their keyboard shortcut direction (chevrons left-then-right, +/- stacked with + on top) |
 | Mute/phase toggle contrast | Custom `SolidToggleStyle` (solid fill + white text when on) — the default `.toggleStyle(.button)` tint was too subtle for a safety-relevant control |
+| Pink noise loudness vs. Sine/White at the same Level | Kellett's raw output measured ~9.5dB quieter in RMS than White at the same `levelDbfs` (higher crest factor, uncompensated); `pinkLevelCompensationGain` now calibrates Pink's RMS to match White's — see `docs/research/pink-white-noise-generation.md`'s "Level compensation" addendum |
+| Device switch mute (post-V1 fix) | Now unconditionally forces every channel muted on every device switch, even a previously-used device with saved unmuted channels — matches ADR 0001's literal wording, which the original implementation didn't fully satisfy |
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.

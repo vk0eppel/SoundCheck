@@ -107,7 +107,7 @@ final class PinkNoiseGenerator: SignalGenerator {
         b3 = 0.86650 * b3 + whiteSample * 0.3104856
         b4 = 0.55000 * b4 + whiteSample * 0.5329522
         b5 = -0.7616 * b5 - whiteSample * 0.0168980
-        let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362) * 0.11
+        let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362) * 0.11 * pinkLevelCompensationGain
         b6 = whiteSample * 0.115926
 
         switch currentMode {
@@ -204,6 +204,20 @@ struct BandLimitedFilterChain {
 /// relation `1/Q = 2*sinh(ln2/2 * BW)` evaluated at BW = 1/3 octave. See
 /// docs/research/one-third-octave-noise-generation.md.
 let thirdOctaveBandpassQ = 1 / (2 * sinh(log(2) / 2 * (1.0 / 3)))
+
+/// Kellett's `0.11` scaling constant was chosen to keep pink noise's *peak* roughly bounded
+/// for a full-scale white noise input, not to match its RMS (perceived loudness) to Sine's
+/// or White's at the same `levelDbfs` -- pink noise's higher crest factor means its raw
+/// output measures ~9.5dB quieter in RMS than White noise at the same nominal level, audibly
+/// so. Unlike `fullRangeOctaveSpan`'s ratio, there's no closed-form expression for Kellett's
+/// IIR construction's output RMS, so this is an empirically-measured makeup gain (RMS of 20M
+/// samples of the exact `PinkNoiseGenerator` recurrence, calibrated to match
+/// `WhiteNoiseGenerator`'s theoretical uniform-distribution RMS of `1/sqrt(3)`) -- the same
+/// empirical-constant approach Kellett's own coefficients already use. Applied to the raw
+/// `pink` sample before mode-filtering, so it uniformly lifts `.fullRange`, `.bandLimited`,
+/// and `.thirdOctave` together, preserving the relative levels the compensation gains above
+/// establish between Pink's sub-modes. See docs/research/pink-white-noise-generation.md.
+let pinkLevelCompensationGain = 2.98
 
 /// Pink noise's PSD is 1/f -- equal energy per octave -- so narrowing from the app's full
 /// 20Hz-20kHz span down to a smaller band discards most of the signal's energy. Without
