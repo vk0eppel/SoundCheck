@@ -96,9 +96,11 @@ struct ContentView: View {
 
                     onOffButton
 
-                    if signalType == .sine {
-                        frequencyControl
-                    }
+                    // Reserved even when not applicable (not conditionally removed) so the
+                    // fixed-size window doesn't reflow when switching signal type.
+                    frequencyControl
+                        .opacity(signalType == .sine ? 1 : 0)
+                        .disabled(signalType != .sine)
 
                     levelControl
                 }
