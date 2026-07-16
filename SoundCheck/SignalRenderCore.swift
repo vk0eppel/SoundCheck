@@ -14,16 +14,28 @@ import os
 
 // MARK: - Generators
 
+/// Widened per ADR 0004 to receive the full parameter snapshot (not just frequency/sample
+/// rate) so generators with extra configuration — Sweep's duration, Pink's noise mode —
+/// can read what they need without the signature changing again per generator. `reset()`
+/// is a lifecycle hook `render()` calls once a generator has fully silenced (see
+/// `SignalRenderCore.render()`), for generators that need to restart from a fixed state
+/// (e.g. Sweep's elapsed-time counter) rather than free-running across stop/start like
+/// Sine's phase does; most generators don't need it, hence the no-op default below.
 protocol SignalGenerator: AnyObject {
-    func nextSample(frequencyHz: Double, sampleRate: Double) -> Double
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double
+    func reset()
+}
+
+extension SignalGenerator {
+    func reset() {}
 }
 
 final class SineGenerator: SignalGenerator {
     private var phase: Double = 0
 
-    func nextSample(frequencyHz: Double, sampleRate: Double) -> Double {
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
         let sample = sin(phase)
-        phase += 2 * .pi * frequencyHz / sampleRate
+        phase += 2 * .pi * parameters.frequencyHz / sampleRate
         if phase > 2 * .pi { phase -= 2 * .pi }
         return sample
     }
@@ -38,7 +50,7 @@ final class WhiteNoiseGenerator: SignalGenerator {
         state = seed
     }
 
-    func nextSample(frequencyHz: Double, sampleRate: Double) -> Double {
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
         state ^= state << 13
         state ^= state >> 7
         state ^= state << 17
@@ -64,8 +76,8 @@ final class PinkNoiseGenerator: SignalGenerator {
         white = WhiteNoiseGenerator(seed: seed)
     }
 
-    func nextSample(frequencyHz: Double, sampleRate: Double) -> Double {
-        let whiteSample = white.nextSample(frequencyHz: frequencyHz, sampleRate: sampleRate)
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        let whiteSample = white.nextSample(parameters: parameters, sampleRate: sampleRate)
         b0 = 0.99886 * b0 + whiteSample * 0.0555179
         b1 = 0.99332 * b1 + whiteSample * 0.0750759
         b2 = 0.96900 * b2 + whiteSample * 0.1538520
@@ -145,10 +157,11 @@ final class SignalRenderCore: @unchecked Sendable {
 
             if rampGain == 0 {
                 activeGeneratorKind = currentParameters.generatorKind
+                generator(for: activeGeneratorKind).reset()
             }
 
             let generator = self.generator(for: activeGeneratorKind)
-            let sample = generator.nextSample(frequencyHz: currentParameters.frequencyHz, sampleRate: sampleRate)
+            let sample = generator.nextSample(parameters: currentParameters, sampleRate: sampleRate)
                 * levelLinear * rampGain
 
             for channel in 0..<channelCount {
