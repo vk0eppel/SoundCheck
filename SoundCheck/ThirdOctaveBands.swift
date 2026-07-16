@@ -30,11 +30,4 @@ enum ThirdOctaveBands {
         let newIndex = min(max(nearestIndex + direction, 0), centerFrequenciesHz.count - 1)
         return centerFrequenciesHz[newIndex]
     }
-
-    /// "31.5" keeps its decimal (the fixed ISO 266 label); every other band is a whole Hz value.
-    static func label(for frequencyHz: Double) -> String {
-        frequencyHz.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(frequencyHz))
-            : String(frequencyHz)
-    }
 }

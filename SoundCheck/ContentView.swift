@@ -144,6 +144,13 @@ struct ContentView: View {
     @State private var manualHighHzDraft: Double = 1000
     @FocusState private var manualRangeFieldFocus: ManualRangeField?
     @State private var thirdOctaveBandIndex: Int = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000) ?? 0
+    // Draft for the shared Frequency field's TextField when it's driving 1/3-octave Pink
+    // rather than Sine -- kept separate from `frequencyHz` (Sine's own persisted value) so
+    // typing a band value here can't clobber Sine's saved frequency, and committed
+    // (blur/Return) rather than live for the same filter-coefficient-hot-swap reason as
+    // `manualLowHz`/`manualHighHz` above.
+    @State private var thirdOctaveHzDraft: Double = 1000
+    @FocusState private var thirdOctaveFieldFocused: Bool
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
@@ -173,25 +180,27 @@ struct ContentView: View {
 
                     // Reserved even when not applicable (not conditionally removed) so the
                     // fixed-size window doesn't reflow when switching signal type or Pink
-                    // sub-mode. Pink's mode selector sits right under on/off; the frequency
-                    // slot just above Level is shared between Sine's frequency field and
-                    // Pink 1/3-Octave's band stepper, so "the frequency-like control" always
-                    // lives in the same spot regardless of which signal/mode is active.
+                    // sub-mode. Pink's mode selector sits right under on/off.
                     pinkNoiseModeControl
                         .opacity(signalType == .pink ? 1 : 0)
                         .disabled(signalType != .pink)
 
-                    bandLimitedDetailControl
-                        .opacity(signalType == .pink && pinkNoiseModeFamily == .bandLimited ? 1 : 0)
-                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .bandLimited))
+                    // One shared slot, not three parallel reserved rows: Sine's frequency
+                    // field, Pink 1/3-Octave's band field, and Pink Band-limited's "Range"
+                    // picker all render in the exact same spot (via `frequencyOrRangeControl`
+                    // switching content), so "the frequency-like control" is literally the
+                    // same control, not three near-duplicates stacked invisibly on top of
+                    // each other.
+                    frequencyOrRangeControl
+                        .opacity(frequencyOrRangeControlVisible ? 1 : 0)
+                        .disabled(!frequencyOrRangeControlVisible)
 
-                    frequencyControl
-                        .opacity(signalType == .sine ? 1 : 0)
-                        .disabled(signalType != .sine)
-
-                    thirdOctaveBandControl
-                        .opacity(signalType == .pink && pinkNoiseModeFamily == .thirdOctave ? 1 : 0)
-                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .thirdOctave))
+                    // Band-limited's manual low/high fields get their own reserved slot right
+                    // below, since they need to appear alongside the Range picker above (not
+                    // instead of it) when Manual is selected.
+                    manualRangeFields
+                        .opacity(signalType == .pink && pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual ? 1 : 0)
+                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual))
 
                     levelControl
                 }
@@ -306,6 +315,28 @@ struct ContentView: View {
         .help("Start or stop the signal (Space)")
     }
 
+    /// The one shared slot for Sine's frequency field, Pink 1/3-Octave's band field, and
+    /// Pink Band-limited's "Range" picker — only one of the three is ever mounted at a time,
+    /// in the exact same VStack position, rather than three parallel reserved rows.
+    @ViewBuilder
+    private var frequencyOrRangeControl: some View {
+        if signalType == .pink && pinkNoiseModeFamily == .bandLimited {
+            rangeControl
+        } else if signalType == .pink && pinkNoiseModeFamily == .thirdOctave {
+            thirdOctaveFrequencyControl
+        } else {
+            frequencyControl
+        }
+    }
+
+    private var frequencyOrRangeControlVisible: Bool {
+        switch signalType {
+        case .sine: true
+        case .pink: pinkNoiseModeFamily == .bandLimited || pinkNoiseModeFamily == .thirdOctave
+        case .white: false
+        }
+    }
+
     private var frequencyControl: some View {
         HStack {
             Text("Frequency")
@@ -345,6 +376,62 @@ struct ContentView: View {
         }
     }
 
+    /// Same visual structure as `frequencyControl` (same label, TextField style, "Hz"
+    /// suffix, chevrons) but bound to `thirdOctaveHzDraft`/`thirdOctaveBandIndex` instead of
+    /// `frequencyHz`, so typing a band value here can't overwrite Sine's saved frequency.
+    /// Typed values commit (and snap to the nearest ISO 266 band) on Return/blur, matching
+    /// `manualRangeFields`' commit-not-live pattern, since a live per-keystroke commit would
+    /// rebuild the bandpass filter's coefficients on every intermediate keystroke.
+    private var thirdOctaveFrequencyControl: some View {
+        HStack {
+            Text("Frequency")
+
+            TextField("Hz", value: $thirdOctaveHzDraft, format: .number.grouping(.never).precision(.fractionLength(0...1)))
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 80)
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .focused($thirdOctaveFieldFocused)
+                .onSubmit { commitThirdOctaveDraft() }
+            Text("Hz")
+                .foregroundStyle(.secondary)
+
+            // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
+            HStack(spacing: 4) {
+                Button {
+                    stepThirdOctaveBand(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .help("Previous 1/3-octave band (←)")
+
+                Button {
+                    stepThirdOctaveBand(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .help("Next 1/3-octave band (→)")
+            }
+            .buttonStyle(.bordered)
+        }
+        .onChange(of: thirdOctaveFieldFocused) { wasFocused, isFocused in
+            if wasFocused && !isFocused { commitThirdOctaveDraft() }
+        }
+        .onChange(of: thirdOctaveBandIndex) { _, newValue in
+            thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[newValue]
+        }
+        // `onChange` alone misses the case where `thirdOctaveBandIndex` was set (e.g. by
+        // `applyLoadedPinkNoiseMode` on launch) while this branch of `frequencyOrRangeControl`
+        // wasn't mounted yet — resync whenever this view (re)appears.
+        .onAppear {
+            thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
+        }
+    }
+
     /// The `RenderParameters`/`SettingsStore`-facing value, assembled from the UI-facing
     /// family + preset/band selection state so the rest of the app (parameter push,
     /// persistence) only ever deals in the one real `PinkNoiseMode`.
@@ -375,21 +462,20 @@ struct ContentView: View {
         .pickerStyle(.segmented)
     }
 
-    /// The preset picker + manual range fields, reserved (opacity/disabled, not removed)
-    /// even when Manual isn't the selected preset — same principle as `frequencyControl`.
-    /// The call site already gates this whole control on Pink + Band-limited.
-    private var bandLimitedDetailControl: some View {
+    /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
+    /// the "frequency-like control" for Pink's Band-limited sub-mode. Manual's low/high
+    /// fields live in their own separate reserved slot (`manualRangeFields`), since they
+    /// need to appear alongside this picker, not instead of it.
+    private var rangeControl: some View {
         HStack {
+            Text("Range")
+
             Picker("", selection: $bandLimitedPresetSelection) {
                 ForEach(BandLimitedPresetSelection.allCases) { preset in
                     Text(preset.rawValue).tag(preset)
                 }
             }
             .pickerStyle(.menu)
-
-            manualRangeFields
-                .opacity(bandLimitedPresetSelection == .manual ? 1 : 0)
-                .disabled(bandLimitedPresetSelection != .manual)
         }
     }
 
@@ -418,38 +504,6 @@ struct ContentView: View {
         .onChange(of: manualRangeFieldFocus) { oldValue, newValue in
             if oldValue == .low && newValue != .low { commitManualLowHz() }
             if oldValue == .high && newValue != .high { commitManualHighHz() }
-        }
-    }
-
-    private var thirdOctaveBandControl: some View {
-        HStack {
-            Text(ThirdOctaveBands.label(for: ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]))
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 55)
-
-            // Left/right, matching the frequency field's own arrow-key/chevron pattern —
-            // safe to share the same global shortcuts since only one of the two control
-            // sets is ever enabled at a time (Sine vs. Pink + 1/3-Octave).
-            HStack(spacing: 4) {
-                Button {
-                    stepThirdOctaveBand(-1)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .help("Previous 1/3-octave band (←)")
-
-                Button {
-                    stepThirdOctaveBand(1)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .help("Next 1/3-octave band (→)")
-            }
-            .buttonStyle(.bordered)
         }
     }
 
@@ -563,6 +617,16 @@ struct ContentView: View {
         let currentHz = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
         let newHz = ThirdOctaveBands.step(from: currentHz, direction: direction)
         thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? thirdOctaveBandIndex
+    }
+
+    /// Clamps and snaps a typed `thirdOctaveHzDraft` value to the nearest ISO 266 band on
+    /// commit (Return/blur) — `direction: 0` reuses `ThirdOctaveBands.step`'s existing
+    /// nearest-index search rather than duplicating it.
+    private func commitThirdOctaveDraft() {
+        let clamped = min(max(thirdOctaveHzDraft, 20), 20000)
+        let snapped = ThirdOctaveBands.step(from: clamped, direction: 0)
+        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: snapped) ?? thirdOctaveBandIndex
+        thirdOctaveHzDraft = snapped
     }
 
     /// Decomposes a loaded `PinkNoiseMode` back into the separate UI-facing family/preset/
