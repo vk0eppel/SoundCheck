@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Derive version from tag
+        id: version
+        run: echo "marketing_version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Release, unsigned)
+        run: |
+          xcodebuild -project SoundCheck.xcodeproj \
+            -scheme SoundCheck \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION=${{ steps.version.outputs.marketing_version }} \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build
+
+      - name: Zip app bundle
+        run: |
+          cd build/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent SoundCheck.app "$GITHUB_WORKSPACE/SoundCheck-${{ github.ref_name }}.zip"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SoundCheck-${{ github.ref_name }}.zip
+          generate_release_notes: true
+          body: |
+            Unsigned build — macOS will show a Gatekeeper warning on first launch.
+            To open: right-click `SoundCheck.app` > **Open** > **Open** (or run `xattr -cr SoundCheck.app` first).
