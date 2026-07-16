@@ -58,6 +58,33 @@ private struct PanelSection<Content: View>: View {
     }
 }
 
+/// Solid fill + bold high-contrast text when on, dim outline when off — engaged/disengaged
+/// must be unmistakable at a glance for channel routing, the same "never color alone, and
+/// make the state obvious" language the ON/OFF button already uses.
+private struct SolidToggleStyle: ToggleStyle {
+    let color: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            configuration.label
+                .font(.caption.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(configuration.isOn ? color : Color.clear)
+        .foregroundStyle(configuration.isOn ? .white : .secondary)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(configuration.isOn ? Color.clear : Color.secondary.opacity(0.4), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 #if os(macOS)
 struct ContentView: View {
     @State private var deviceCatalog = AudioDeviceCatalog()
@@ -305,14 +332,12 @@ struct ContentView: View {
                         Toggle(isOn: $channels[index].muted) {
                             Text("Mute")
                         }
-                        .toggleStyle(.button)
-                        .tint(.red)
+                        .toggleStyle(SolidToggleStyle(color: .red))
 
                         Toggle(isOn: $channels[index].phaseReversed) {
                             Text("Ø")
                         }
-                        .toggleStyle(.button)
-                        .tint(.soundCheckAmber)
+                        .toggleStyle(SolidToggleStyle(color: .soundCheckAmber))
                     }
                     .padding(8)
                     .background(Color.secondary.opacity(0.08))
