@@ -65,6 +65,16 @@ final class SettingsStore {
         return Array(repeating: .defaultState, count: channelCount)
     }
 
+    /// Channel states to apply on a device switch: preserves saved phase-reverse state, but
+    /// always forces mute on — ADR 0001 requires every channel muted "on every device switch,"
+    /// not just for previously-unseen devices, so a previously-unmuted channel must not come
+    /// back unmuted just because its device was seen before.
+    func channelStatesForDeviceSwitch(forDeviceUID uid: String, channelCount: Int) -> [PersistedChannelState] {
+        channelStates(forDeviceUID: uid, channelCount: channelCount).map {
+            PersistedChannelState(muted: true, phaseReversed: $0.phaseReversed)
+        }
+    }
+
     private func save() {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         defaults.set(data, forKey: storageKey)

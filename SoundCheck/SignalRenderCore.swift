@@ -116,7 +116,7 @@ final class PinkNoiseGenerator: SignalGenerator {
         case .bandLimited:
             return bandLimitedFilter?.process(pink) ?? pink
         case .thirdOctave:
-            return thirdOctaveFilter?.process(pink) ?? pink
+            return (thirdOctaveFilter?.process(pink) ?? pink) * thirdOctaveLevelCompensationGain
         }
     }
 }
@@ -160,11 +160,14 @@ enum BandLimitedPreset: Equatable, Sendable, Codable {
 
 /// Cascades `Biquad` sections realizing a `BandLimitedPreset`'s optional highpass and/or
 /// lowpass edge, each edge a 4th-order (2-section) Butterworth cascade — the standard
-/// per-section Q values from docs/research/band-limited-noise-generation.md.
+/// per-section Q values from docs/research/band-limited-noise-generation.md. Also applies
+/// `levelCompensationGain` so a narrowed band's RMS matches full-range pink noise's RMS at
+/// the same `levelDbfs` — see the comment on `fullRangeOctaveSpan` below for why.
 struct BandLimitedFilterChain {
     private static let butterworth4thOrderQs: [Double] = [0.54120, 1.30656]
 
     private var sections: [Biquad] = []
+    private let levelCompensationGain: Double
 
     init(preset: BandLimitedPreset, sampleRate: Double) {
         let edges = preset.edges
@@ -178,6 +181,14 @@ struct BandLimitedFilterChain {
                 Biquad(type: .lowpass, f0: lowpassHz, q: $0, sampleRate: sampleRate)
             }
         }
+
+        // No highpass edge (0-200Hz) floors at the app's own 20Hz bound; no lowpass edge
+        // (1k-20kHz/7k-20kHz) ceils at its 20kHz bound -- the same fixed range used
+        // everywhere else (frequency field, ThirdOctaveBands).
+        let lowHz = edges.highpassHz ?? 20
+        let highHz = edges.lowpassHz ?? 20000
+        let octaveSpan = log2(highHz / lowHz)
+        levelCompensationGain = octaveSpan > 0 ? (fullRangeOctaveSpan / octaveSpan).squareRoot() : 1
     }
 
     mutating func process(_ x: Double) -> Double {
@@ -185,7 +196,7 @@ struct BandLimitedFilterChain {
         for index in sections.indices {
             y = sections[index].process(y)
         }
-        return y
+        return y * levelCompensationGain
     }
 }
 
@@ -193,6 +204,20 @@ struct BandLimitedFilterChain {
 /// relation `1/Q = 2*sinh(ln2/2 * BW)` evaluated at BW = 1/3 octave. See
 /// docs/research/one-third-octave-noise-generation.md.
 let thirdOctaveBandpassQ = 1 / (2 * sinh(log(2) / 2 * (1.0 / 3)))
+
+/// Pink noise's PSD is 1/f -- equal energy per octave -- so narrowing from the app's full
+/// 20Hz-20kHz span down to a smaller band discards most of the signal's energy. Without
+/// compensation, `levelDbfs` would describe the pre-filter amplitude, not the actual
+/// (much quieter) filtered output. `fullRangeOctaveSpan` is the reference span used by both
+/// `BandLimitedFilterChain` and `thirdOctaveLevelCompensationGain` below to compute a makeup
+/// gain that restores the RMS a full-range signal would have at the same `levelDbfs`. See
+/// docs/research/band-limited-noise-generation.md and
+/// docs/research/one-third-octave-noise-generation.md.
+let fullRangeOctaveSpan = log2(20000.0 / 20.0)
+
+/// 1/3-octave is always exactly 1/3-octave wide, so unlike `BandLimitedFilterChain`'s
+/// per-preset span, this compensation gain is a single fixed constant.
+let thirdOctaveLevelCompensationGain = (fullRangeOctaveSpan / (1.0 / 3.0)).squareRoot()
 
 struct RenderParameters: Equatable, Sendable {
     var generatorKind: GeneratorKind = .sine

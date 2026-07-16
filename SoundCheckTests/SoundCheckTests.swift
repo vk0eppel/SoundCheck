@@ -70,6 +70,29 @@ struct SoundCheckTests {
         #expect(states.allSatisfy { $0 == .defaultState })
     }
 
+    @MainActor
+    @Test func switchingToAPreviouslyUsedDeviceStillMutesAllChannels() async throws {
+        let suiteName = "SettingsStoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = SettingsStore(defaults: defaults)
+        store.update {
+            $0.channelStatesByDeviceUID["device-uid-1"] = [
+                PersistedChannelState(muted: false, phaseReversed: true),
+                PersistedChannelState(muted: false, phaseReversed: false),
+            ]
+        }
+
+        // ADR 0001: every channel is forced muted on every device switch, even switching
+        // back to a device whose saved state had a channel left unmuted -- only
+        // phase-reverse is restored from what was saved.
+        let states = store.channelStatesForDeviceSwitch(forDeviceUID: "device-uid-1", channelCount: 2)
+
+        #expect(states.allSatisfy { $0.muted })
+        #expect(states.map(\.phaseReversed) == [true, false])
+    }
+
     @Test func rampsGainInGradually() async throws {
         let core = SignalRenderCore()
         core.updateParameters {
@@ -225,6 +248,50 @@ struct SoundCheckTests {
 
             #expect(abs(centerGain - 1) < 0.05)
             #expect(farGain < 0.1)
+        }
+    }
+
+    /// Pink noise is equal-energy-per-octave, so without a makeup gain, band-limited/
+    /// 1/3-octave modes would measure many dB quieter than full-range pink at the same
+    /// `levelDbfs` -- the config value would describe the pre-filter amplitude, not the
+    /// actual output. Verifies the compensation gain in `BandLimitedFilterChain` and
+    /// `thirdOctaveLevelCompensationGain` keeps measured RMS close to full-range's at a
+    /// fixed Level. A real biquad's finite transition-band roll-off (not brick-wall) means
+    /// this can't match exactly, hence the generous tolerance.
+    @Test func filteredPinkModesMatchFullRangeRMSAtTheSameLevel() async throws {
+        let sampleRate = 48000.0
+        let frameCount = 96000
+        let levelDbfs = -12.0
+
+        func rms(mode: PinkNoiseMode) -> Double {
+            let core = SignalRenderCore()
+            core.updateParameters {
+                $0.generatorKind = .pink
+                $0.levelDbfs = levelDbfs
+                $0.running = true
+                $0.pinkNoiseMode = mode
+                $0.channelMuted = [false]
+                $0.channelPhaseReversed = [false]
+            }
+            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+            let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
+            let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
+            return meanSquare.squareRoot()
+        }
+
+        let fullRangeRMS = rms(mode: .fullRange)
+        func dbRatio(_ mode: PinkNoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
+
+        let presets: [BandLimitedPreset] = [
+            .preset0to200Hz, .preset200HzTo1kHz, .preset1kTo20kHz, .preset7kTo20kHz,
+            .manual(lowHz: 2000, highHz: 4000),
+        ]
+        for preset in presets {
+            #expect(abs(dbRatio(.bandLimited(preset))) < 3)
+        }
+
+        for bandIndex in [5, 17, 25] {
+            #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 3)
         }
     }
 

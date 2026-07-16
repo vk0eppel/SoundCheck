@@ -54,6 +54,14 @@ This fits every constraint that matters here:
 
 The one implementation note worth carrying into the ticket that resolves this: settle time at the lowest bands (20–25Hz) will be on the order of 100–200ms due to the narrow absolute bandwidth there, and quiet-signal denormal decay should get the same flush-to-zero treatment any biquad-based generator needs — neither changes the recommendation, both are just things the implementer should know going in.
 
+## Level compensation (post-implementation addendum)
+
+A single 1/3-octave-wide bandpass section is unity-gain *at* its own center frequency, but that says nothing about how much of the wideband pink source's total energy a 1/3-octave slice actually contains. Pink noise's PSD is 1/f — equal energy per octave — so a 1/3-octave band carries only `(1/3) / 9.97 ≈ 3.3%` of the full 20Hz–20kHz span's energy. Without compensation, `levelDbfs` described the pre-filter amplitude scale factor, not the actual (much quieter) filtered output, exactly the same issue found and fixed for `docs/research/band-limited-noise-generation.md`'s presets — see that doc's own "Level compensation" addendum for the full rationale, which applies identically here.
+
+Because every 1/3-octave band is, by construction, always exactly 1/3 octave wide, the makeup gain (`thirdOctaveLevelCompensationGain` in `SoundCheck/SignalRenderCore.swift`) is a single fixed constant — `sqrt(fullRangeOctaveSpan / (1/3))`, roughly +14.8dB — rather than something computed per band. It's applied at the `PinkNoiseGenerator.nextSample()` call site (multiplying the bandpass filter's output) rather than inside the bare `Biquad` itself, since `Biquad` is a shared primitive also used unmodified by `BandLimitedFilterChain` and doesn't otherwise know about pink noise's spectral shape.
+
+Same known limitation as the band-limited presets: this is a substantial makeup gain, and Kellett's pink noise isn't peak-normalized anywhere in the render path, so narrowband transient peaks can approach/exceed full scale sooner than before at high `levelDbfs` settings. Flagged, not fixed, as part of this change.
+
 ## Sources
 
 - [Cookbook formulae for audio EQ biquad filter coefficients (RBJ Audio-EQ-Cookbook)](https://webaudio.github.io/Audio-EQ-Cookbook/Audio-EQ-Cookbook.txt)

@@ -663,11 +663,11 @@ struct ContentView: View {
     private func selectDeviceIfNeeded() {
         guard let device = selectedDevice else { return }
         engineController.selectDevice(device)
-        // Restores this device's saved channel states, or all-muted if none are saved yet
-        // or the channel count no longer matches (ADR 0001) — SettingsStore already
-        // applies that fallback.
-        let savedStates = settingsStore.channelStates(forDeviceUID: device.uid, channelCount: device.outputChannelCount)
-        channels = savedStates.map { ChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed) }
+        // Every channel is forced muted on every device switch, per ADR 0001 — even for a
+        // previously-used device whose saved state had a channel unmuted. Only phase-reverse
+        // state is restored from what was saved.
+        let statesForSwitch = settingsStore.channelStatesForDeviceSwitch(forDeviceUID: device.uid, channelCount: device.outputChannelCount)
+        channels = statesForSwitch.map { ChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed) }
     }
 
     private func handleDeviceListChanged() {
