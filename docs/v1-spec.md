@@ -145,3 +145,16 @@ Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under o
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.
+
+## V2 addendum: sine sweep
+
+Decided via a grilling session on [issue #15](https://github.com/vk0eppel/SoundCheck/issues/15) on the V2 map.
+
+- **Curve:** logarithmic only — no linear mode, no user-selectable curve. A log sweep spends equal time per octave rather than per Hz, which is both the standard choice for acoustic test sweeps and the right fit for a tool whose job is checking a speaker's response across the audible range.
+- **Range:** fixed at the app's existing 20Hz–20kHz bounds — no configurable start/end frequency.
+- **Duration control:** a free numeric field in seconds (same interaction pattern as the level field — arrow/button stepping by whole seconds, free-text entry for decimals), range 1–60s, default 10s. Occupies the same reserved slot the frequency field uses today (hidden/disabled for Sine/Pink/White, visible/enabled for Sweep) — see "Frequency control reflow on signal-type switch" in the Decisions log, now generalized to "signal-type-specific control slot" rather than sine-only.
+- **Playback:** continuous loop (low→high, then instantly repeats) until the user presses OFF — no one-shot mode, no direction option (always low→high). Keeps the same on/off mental model as every other signal type: ON means sound continues until explicitly turned OFF.
+- **Loop wrap-point:** instant jump back to 20Hz, no fade/mute around the wrap. Sweeping only changes frequency, not amplitude, so there's no waveform discontinuity to guard against — the abrupt pitch drop is the expected, self-evident sound of the sweep restarting.
+- **No live frequency readout** during the sweep — a continuously-updating numeric display would need to refresh far faster than any other readout in the app and isn't actionable mid-sweep.
+- **OFF then ON:** always restarts fresh from 20Hz. Sweep position is not preserved across a stop — it's pure audio-thread-only ephemeral state (no `SettingsStore` interaction), reset via the generator's new `reset()` hook (see [ADR 0004](adr/0004-generator-protocol-widened-for-parameterized-generators.md)) at the same instant the render block already detects `rampGain == 0`.
+- **Architecture:** the `SignalGenerator` protocol widened to receive the full parameter snapshot (not just frequency/sample rate) so Sweep can read its configured duration, and gained a `reset()` lifecycle method — see [ADR 0004](adr/0004-generator-protocol-widened-for-parameterized-generators.md).
