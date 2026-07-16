@@ -107,6 +107,11 @@ final class SignalRenderCore: @unchecked Sendable {
     nonisolated(unsafe) private let pinkGenerator = PinkNoiseGenerator()
     nonisolated(unsafe) private let whiteGenerator = WhiteNoiseGenerator()
     nonisolated(unsafe) private var rampGain: Double = 0
+    // Only adopted from `RenderParameters.generatorKind` once `rampGain` reaches silence —
+    // otherwise a signal-type switch mid-ramp would audibly fade out the *new* generator
+    // instead of the old one, since the switch and the stop-triggering `running = false`
+    // land in the same parameter update.
+    nonisolated(unsafe) private var activeGeneratorKind: GeneratorKind = .sine
 
     var parameters: RenderParameters {
         parametersLock.withLock { $0 }
@@ -123,7 +128,6 @@ final class SignalRenderCore: @unchecked Sendable {
         channelBuffer: (Int) -> UnsafeMutableBufferPointer<Float>
     ) {
         let currentParameters = parametersLock.withLock { $0 }
-        let generator = self.generator(for: currentParameters.generatorKind)
         let levelLinear = Self.linearGain(fromDbfs: currentParameters.levelDbfs)
         let rampStep = 1.0 / (Self.rampDurationSeconds * sampleRate)
 
@@ -135,6 +139,11 @@ final class SignalRenderCore: @unchecked Sendable {
                 rampGain = max(rampGain - rampStep, targetGain)
             }
 
+            if rampGain == 0 {
+                activeGeneratorKind = currentParameters.generatorKind
+            }
+
+            let generator = self.generator(for: activeGeneratorKind)
             let sample = generator.nextSample(frequencyHz: currentParameters.frequencyHz, sampleRate: sampleRate)
                 * levelLinear * rampGain
 

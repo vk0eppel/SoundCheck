@@ -77,6 +77,41 @@ struct SoundCheckTests {
         #expect(lateMagnitude > 0.1)
     }
 
+    @Test func signalSwitchDoesNotAudiblyStartNewGeneratorWhileRampingDown() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        core.updateParameters {
+            $0.generatorKind = .sine
+            $0.frequencyHz = 1000
+            $0.levelDbfs = 0
+            $0.running = true
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+
+        // Let the sine ramp fully up to steady state first.
+        let rampFrames = Int(0.015 * sampleRate) + 1
+        _ = Self.renderToArrays(core, frameCount: rampFrames + 100, channelCount: 1, sampleRate: sampleRate)
+
+        // Simulate a signal-type switch: generatorKind changes and running drops to
+        // false in the same parameter update, exactly as ContentView does on a
+        // signal-type change (see docs/adr/0003-signal-switch-forces-stop.md).
+        core.updateParameters {
+            $0.generatorKind = .white
+            $0.running = false
+        }
+
+        // Render only a few frames into the ~15ms ramp-down. The still-decaying
+        // signal should be the *old* generator (sine), not the newly-selected one
+        // (white noise) — otherwise you briefly hear the start of the new signal
+        // fading out instead of the old one.
+        let channels = Self.renderToArrays(core, frameCount: 20, channelCount: 1, sampleRate: sampleRate)
+        let samples = channels[0]
+
+        let maxDelta = zip(samples, samples.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        #expect(maxDelta < 0.3)
+    }
+
     @Test func perChannelMuteAndPhaseApplyCorrectly() async throws {
         let core = SignalRenderCore()
         core.updateParameters {
