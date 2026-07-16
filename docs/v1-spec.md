@@ -21,22 +21,24 @@ Platform: macOS first, iOS portability considered but not designed for yet.
 
 ```
 ┌─────────────────────────────────────────────┐
+│ GENERATOR                                    │
 │  [ SINE | PINK | WHITE ]   ← signal selector │
-│                                               │
 │              ┌───────────┐                   │
-│              │  ON/OFF   │  ← big toggle      │
+│              │ ● ON/OFF  │  ← big toggle      │
 │              └───────────┘                   │
-│                                               │
-│  Frequency:  [ 1000 ] Hz   ◀ prev  next ▶     │  (sine only)
-│                                               │
-│  Level:      [ -20 ] dBFS   [-] [+]           │
-│                                               │
+│  Frequency:  [ 1000 ] Hz        ◀ ▶           │  (sine only; space reserved when hidden)
+│  Level:      [ -20 ] dBFS        [+]          │
+│                                    [-]         │
+├───────────────────────────────────────────────┤
+│ OUTPUT                                        │
 │  Output Device:  [ MOTU 8A ▾ ]                │
-│  Ch 1: [Mute] [Ø]     Ch 2: [Mute] [Ø]  ...   │  ← per output channel
-│                                               │
-│  48.0 kHz / 24-bit          ← read-only, live │
+│  CH1 [Mute][Ø]  CH2 [Mute][Ø]  ...  ← scroll  │
+├───────────────────────────────────────────────┤
+│  48.0 kHz / 24-bit          [ ] Always on Top │
 └─────────────────────────────────────────────┘
 ```
+
+GENERATOR and OUTPUT are titled panel groupings (tracked all-caps labels, subtle background fill) — not decoration, they separate "what's being generated" from "where it's going." Frequency's prev/next chevrons and Level's +/- both sit to the right of their value, ordered to match their keyboard shortcuts: chevrons left-then-right (matching ←/→), +/- stacked with + on top (matching ↑/↓ — up increases). All four stepper buttons share one explicit size so they read as one control family. See "Visual design" below for the full rationale.
 
 ## Controls
 
@@ -57,12 +59,14 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
 - Typed free-text values don't snap to the 1/3-octave grid; arrows are the only thing that snaps.
 - Clamp to range on commit, reject non-numeric input.
+- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch.
 
 ### Level field
 - Range: -99 dBFS to 0 dBFS.
 - Default -20 dBFS.
-- Up/Down arrows and [-]/[+] buttons step by 1dB (whole numbers only).
+- Up/Down arrows and [+]/[-] buttons step by 1dB (whole numbers only).
 - Free-text entry accepts decimal dB values (e.g. "-18.5") for precise level matching — decimals are only reachable by typing, not by stepping.
+- +/- buttons sit stacked to the right of the value, + above -, matching the up-arrow/down-arrow shortcuts (up increases, physically on top).
 
 ### Output device picker
 - Enumerate Core Audio output devices live; update on hot-plug/removal via device-change listener (not a one-time query at launch).
@@ -73,9 +77,20 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 - The signal is routed to every channel of the device. **Every channel defaults to muted — including channel 1** — on launch and on every device switch, so nothing plays until the user explicitly unmutes the channel(s) they intend to test. See [ADR 0001](adr/0001-all-channels-muted-by-default.md).
 - Mute and Ø (phase) are independent per-channel toggles.
 - Layout must handle devices with many channels (8+) gracefully: a horizontally-scrolling row within a fixed-height area (not wrapping to multiple rows), so window height stays constant regardless of the connected device's channel count.
+- Both toggles use a solid-fill style (bold white text on a solid color background when engaged, dim outline when not) rather than a light system tint — engaged/disengaged must be unmistakable at a glance for a routing control this safety-relevant.
 
 ### Sample rate / bit depth display
 - Read-only, reflects the selected device's current nominal sample rate and stream format. Updates live if the format changes externally (e.g. via Audio MIDI Setup while SoundCheck is running).
+
+## Visual design
+
+The screen has a deliberate "precision instrument, not settings pane" identity, built after the initial functional shell already existed (see the "Give the V1 screen a real visual identity" commit). It respects the existing "follow system appearance automatically" decision below — no forced dark theme — so the identity comes from typography, proportion, and one accent color rather than overriding light/dark.
+
+- **One signature accent** (`Color.soundCheckAmber`, a warning-lamp amber): reused consistently for the running-state LED/background, the selected signal-type tab, and the engaged Ø toggle. Never used for anything else, so it stays meaningful. Mute stays red — a distinct, universally-understood "danger/silence" color — so the two per-channel toggles read as different kinds of control, not just two amber-ish buttons.
+- **Monospaced tabular digits** (`.fontDesign(.monospaced)`) on the frequency field, level field, and the sample-rate/bit-depth readout — the standard instrumentation convention so numbers don't visually jitter as they change.
+- **Two titled panel groupings** (`PanelSection`, a reusable titled container with a subtle background fill): GENERATOR and OUTPUT, with tracked all-caps labels evoking panel silkscreening — structural, not decorative, since it separates "what's being generated" from "where it's going."
+- **`SolidToggleStyle`**: a custom `ToggleStyle` used for Mute and Ø, filling solid + bold white text when on, dim outline when off, instead of the much-subtler default `.toggleStyle(.button)` + `.tint()` combination.
+- Buttons whose only visible content is an icon (the ON/OFF button, the frequency chevrons, the level +/-) need an explicit `.contentShape(Rectangle())` on their label — otherwise `.buttonStyle(.plain)` only makes the icon glyph itself tappable, not the surrounding background/padding, which is not obvious from the rendered appearance and needs a visual click-target check, not just a build, to catch.
 
 ## Audio engine architecture
 
@@ -119,6 +134,10 @@ Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under o
 | Start/stop ramp curve/duration | Linear, ~15ms, inside the render block |
 | Per-channel mute/phase application point | Inside the same render block, final per-channel pass |
 | Output device binding | `AVAudioEngine` output node, `AudioUnit` `kAudioOutputUnitProperty_CurrentDevice` override |
+| Visual identity | "Precision instrument" direction: one amber signature accent, monospaced numeric readouts, titled panel groupings — see "Visual design" |
+| Frequency control reflow on signal-type switch | Space always reserved (hidden + disabled, not removed) so the fixed-size window never reflows |
+| Stepper button placement | Grouped to the right of the value, ordered to match their keyboard shortcut direction (chevrons left-then-right, +/- stacked with + on top) |
+| Mute/phase toggle contrast | Custom `SolidToggleStyle` (solid fill + white text when on) — the default `.toggleStyle(.button)` tint was too subtle for a safety-relevant control |
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.

@@ -4,7 +4,7 @@ A signal generator utility for macOS, for sound engineers, techs, and hifi enthu
 
 ## Status
 
-V1 is in progress: sine wave, pink noise, and white noise generators, with the full UI chrome (on/off, frequency field, level field, output device picker, per-channel mute/phase, live sample rate/bit depth display). See [`docs/v1-spec.md`](docs/v1-spec.md) for the complete spec, and the [SoundCheck V1 map](https://github.com/vk0eppel/SoundCheck/issues/1) for what's built vs. still open.
+V1 is built: sine wave, pink noise, and white noise generators, with the full UI chrome (on/off, frequency field, level field, output device picker, per-channel mute/phase, live sample rate/bit depth display) wired end-to-end to a real `AVAudioEngine` graph, live Core Audio device enumeration, and persisted settings. See [`docs/v1-spec.md`](docs/v1-spec.md) for the complete spec and the [SoundCheck V1 map](https://github.com/vk0eppel/SoundCheck/issues/1) (closed) for how it was built. V2 (band-limited noise, 1/3-octave noise, sweeps, square wave) hasn't been planned yet.
 
 ## Requirements
 
