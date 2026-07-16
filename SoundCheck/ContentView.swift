@@ -193,6 +193,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(isRunning ? Color.soundCheckAmber.opacity(0.22) : Color.secondary.opacity(0.15))
@@ -226,6 +227,7 @@ struct ContentView: View {
                     stepFrequency(-1)
                 } label: {
                     Image(systemName: "chevron.left")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [])
 
@@ -233,9 +235,11 @@ struct ContentView: View {
                     stepFrequency(1)
                 } label: {
                     Image(systemName: "chevron.right")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [])
             }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -260,7 +264,7 @@ struct ContentView: View {
                     adjustLevel(1)
                 } label: {
                     Image(systemName: "plus")
-                        .frame(width: 20)
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.upArrow, modifiers: [])
 
@@ -268,13 +272,17 @@ struct ContentView: View {
                     adjustLevel(-1)
                 } label: {
                     Image(systemName: "minus")
-                        .frame(width: 20)
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.downArrow, modifiers: [])
             }
             .buttonStyle(.bordered)
         }
     }
+
+    /// Shared tap-target size for every stepper button (frequency prev/next, level +/-)
+    /// so they read as one consistent control family.
+    private static let stepperButtonSize: CGFloat = 16
 
     private var devicePicker: some View {
         Picker("Output Device", selection: $selectedDeviceUID) {
