@@ -169,6 +169,94 @@ struct SoundCheckTests {
         #expect(abs(actualRatio - 0.1) < 0.01)
     }
 
+    @Test func biquadLowpassPassesBelowAndAttenuatesAboveCutoff() async throws {
+        let sampleRate = 48000.0
+        let cutoffHz = 1000.0
+
+        let passGain = Self.steadyStateGain(
+            biquad: Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            probeFrequencyHz: 100, sampleRate: sampleRate
+        )
+        let stopGain = Self.steadyStateGain(
+            biquad: Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            probeFrequencyHz: 8000, sampleRate: sampleRate
+        )
+
+        #expect(passGain > 0.9)
+        #expect(stopGain < 0.2)
+    }
+
+    @Test func biquadHighpassAttenuatesBelowAndPassesAboveCutoff() async throws {
+        let sampleRate = 48000.0
+        let cutoffHz = 1000.0
+
+        let stopGain = Self.steadyStateGain(
+            biquad: Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            probeFrequencyHz: 100, sampleRate: sampleRate
+        )
+        let passGain = Self.steadyStateGain(
+            biquad: Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            probeFrequencyHz: 8000, sampleRate: sampleRate
+        )
+
+        #expect(stopGain < 0.2)
+        #expect(passGain > 0.9)
+    }
+
+    @Test func biquadBandpassPassesAtCenterAndAttenuatesFarOutside() async throws {
+        let sampleRate = 48000.0
+        let centerHz = 1000.0
+        let thirdOctaveQ = 4.318
+
+        func gain(at probeHz: Double) -> Double {
+            Self.steadyStateGain(
+                biquad: Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveQ, sampleRate: sampleRate),
+                probeFrequencyHz: probeHz, sampleRate: sampleRate
+            )
+        }
+
+        #expect(abs(gain(at: centerHz) - 1) < 0.05)
+        #expect(gain(at: centerHz / 8) < 0.1)
+        #expect(gain(at: centerHz * 8) < 0.1)
+    }
+
+    @Test func biquadRemainsStableAtLowCutoffRelativeToSampleRate() async throws {
+        let sampleRate = 44100.0
+        var biquad = Biquad(type: .highpass, f0: 20, q: 0.7071, sampleRate: sampleRate)
+
+        var maxAbsOutput = 0.0
+        for n in 0..<Int(sampleRate * 2) {
+            let x = sin(2 * Double.pi * 20 * Double(n) / sampleRate)
+            let y = biquad.process(x)
+            #expect(y.isFinite)
+            maxAbsOutput = max(maxAbsOutput, abs(y))
+        }
+        #expect(maxAbsOutput < 10)
+    }
+
+    /// Feeds a sine probe through a copy of `biquad` and returns the steady-state
+    /// output/input RMS ratio, skipping enough initial samples for the filter to settle.
+    private static func steadyStateGain(biquad: Biquad, probeFrequencyHz: Double, sampleRate: Double) -> Double {
+        var biquad = biquad
+        let totalSamples = 8192
+        let settleSamples = 4096
+
+        var inputSumSquares = 0.0
+        var outputSumSquares = 0.0
+        for n in 0..<totalSamples {
+            let x = sin(2 * Double.pi * probeFrequencyHz * Double(n) / sampleRate)
+            let y = biquad.process(x)
+            if n >= settleSamples {
+                inputSumSquares += x * x
+                outputSumSquares += y * y
+            }
+        }
+
+        let inputRMS = (inputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
+        let outputRMS = (outputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
+        return outputRMS / inputRMS
+    }
+
     private static func renderToArrays(
         _ core: SignalRenderCore, frameCount: Int, channelCount: Int, sampleRate: Double
     ) -> [[Float]] {
