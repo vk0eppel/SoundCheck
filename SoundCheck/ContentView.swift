@@ -231,6 +231,7 @@ struct ContentView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .keyboardShortcut(.space, modifiers: [])
+        .help("Start or stop the signal (Space)")
     }
 
     private var frequencyControl: some View {
@@ -257,6 +258,7 @@ struct ContentView: View {
                         .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [])
+                .help("Previous 1/3-octave band (←)")
 
                 Button {
                     stepFrequency(1)
@@ -265,6 +267,7 @@ struct ContentView: View {
                         .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [])
+                .help("Next 1/3-octave band (→)")
             }
             .buttonStyle(.bordered)
         }
@@ -294,6 +297,7 @@ struct ContentView: View {
                         .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.upArrow, modifiers: [])
+                .help("Increase level by 1dB (↑)")
 
                 Button {
                     adjustLevel(-1)
@@ -302,6 +306,7 @@ struct ContentView: View {
                         .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
                 }
                 .keyboardShortcut(.downArrow, modifiers: [])
+                .help("Decrease level by 1dB (↓)")
             }
             .buttonStyle(.bordered)
         }

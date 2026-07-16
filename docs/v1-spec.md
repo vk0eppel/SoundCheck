@@ -51,6 +51,9 @@ Segmented control, 3 states (Sine / Pink / White), all options visible at once. 
 ### Big On/Off switch
 - Spacebar toggles globally, except while a text field is actively being edited.
 - On launch, no field is pre-focused — otherwise AppKit's default first-responder behavior auto-focuses the frequency field (the first key-capable control), silently swallowing the very first spacebar press as a typed space instead of starting the generator. `WindowAccessor` explicitly resigns focus to the window's content view once, right after the window is created.
+
+### In-app shortcut help
+No separate help view, button, or menu item. Every control that has a keyboard shortcut (on/off, frequency prev/next, level +/-) carries a native `.help()` tooltip stating its shortcut, shown on hover — the standard macOS mechanism, discoverable exactly where the shortcut applies, with no added UI chrome.
 - Linear ~15ms gain ramp on start/stop (applied inside the render block) to avoid clicks — matters since users are driving real speakers. Same ramp is used for the forced stop triggered by a signal-type switch.
 - State is shown via **both** color and an explicit text label ("ON"/"OFF") — never color alone. Running state uses red/amber (signals "hot"), not green, since this is the state where something is actively happening, not a "safe" state.
 
