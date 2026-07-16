@@ -30,6 +30,36 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Which of Pink's three sub-modes is active — the UI-facing counterpart to
+/// `PinkNoiseMode`, which can't itself be `CaseIterable`/segmented-picker-friendly once
+/// `.bandLimited`/`.thirdOctave` carry associated data.
+private enum PinkNoiseModeFamily: String, CaseIterable, Identifiable {
+    case fullRange = "FULL-RANGE"
+    case bandLimited = "BAND-LIMITED"
+    case thirdOctave = "1/3-OCTAVE"
+
+    var id: String { rawValue }
+}
+
+/// The UI-facing counterpart to `BandLimitedPreset`, for the same reason as
+/// `PinkNoiseModeFamily` — `.manual` carries the actual low/high values separately.
+private enum BandLimitedPresetSelection: String, CaseIterable, Identifiable {
+    case preset0to200Hz = "0–200Hz"
+    case preset200HzTo1kHz = "200Hz–1kHz"
+    case preset1kTo20kHz = "1kHz–20kHz"
+    case preset7kTo20kHz = "7kHz–20kHz"
+    case manual = "MANUAL"
+
+    var id: String { rawValue }
+}
+
+/// Identifies which manual-range field currently has focus, so losing focus (blur) can be
+/// distinguished from moving between the two fields — see `manualRangeFields`.
+private enum ManualRangeField: Hashable {
+    case low
+    case high
+}
+
 struct ChannelState: Equatable {
     var muted = true
     var phaseReversed = false
@@ -100,7 +130,20 @@ struct ContentView: View {
     @State private var alwaysOnTop = false
     @State private var frequencyHz: Double = 1000
     @State private var levelDbfs: Double = -20
-    @State private var pinkNoiseMode: PinkNoiseMode = .fullRange
+    @State private var pinkNoiseModeFamily: PinkNoiseModeFamily = .fullRange
+    @State private var bandLimitedPresetSelection: BandLimitedPresetSelection = .preset0to200Hz
+    // Committed values -- these, not the drafts below, feed `bandLimitedPreset`/
+    // `pinkNoiseMode` and so the render core. Kept separate from the text fields' live
+    // typing so a filter-coefficient rebuild only happens on commit (blur/Return), not per
+    // keystroke -- per docs/research/band-limited-noise-generation.md's Cost section,
+    // hot-swapping a running filter's coefficients on every intermediate drag/keystroke
+    // frame risks an audible discontinuity.
+    @State private var manualLowHz: Double = 200
+    @State private var manualHighHz: Double = 1000
+    @State private var manualLowHzDraft: Double = 200
+    @State private var manualHighHzDraft: Double = 1000
+    @FocusState private var manualRangeFieldFocus: ManualRangeField?
+    @State private var thirdOctaveBandIndex: Int = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000) ?? 0
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
@@ -138,6 +181,10 @@ struct ContentView: View {
                         .opacity(signalType == .pink ? 1 : 0)
                         .disabled(signalType != .pink)
 
+                    pinkNoiseModeDetailControl
+                        .opacity(signalType == .pink ? 1 : 0)
+                        .disabled(signalType != .pink)
+
                     levelControl
                 }
             }
@@ -166,7 +213,7 @@ struct ContentView: View {
             signalType = snapshot.signalType
             frequencyHz = snapshot.frequencyHz
             levelDbfs = snapshot.levelDbfs
-            pinkNoiseMode = snapshot.pinkNoiseMode
+            applyLoadedPinkNoiseMode(snapshot.pinkNoiseMode)
             engineController.renderCore.updateParameters {
                 $0.generatorKind = snapshot.signalType.generatorKind
                 $0.frequencyHz = snapshot.frequencyHz
@@ -290,13 +337,119 @@ struct ContentView: View {
         }
     }
 
+    /// The `RenderParameters`/`SettingsStore`-facing value, assembled from the UI-facing
+    /// family + preset/band selection state so the rest of the app (parameter push,
+    /// persistence) only ever deals in the one real `PinkNoiseMode`.
+    private var pinkNoiseMode: PinkNoiseMode {
+        switch pinkNoiseModeFamily {
+        case .fullRange: .fullRange
+        case .bandLimited: .bandLimited(bandLimitedPreset)
+        case .thirdOctave: .thirdOctave(bandIndex: thirdOctaveBandIndex)
+        }
+    }
+
+    private var bandLimitedPreset: BandLimitedPreset {
+        switch bandLimitedPresetSelection {
+        case .preset0to200Hz: .preset0to200Hz
+        case .preset200HzTo1kHz: .preset200HzTo1kHz
+        case .preset1kTo20kHz: .preset1kTo20kHz
+        case .preset7kTo20kHz: .preset7kTo20kHz
+        case .manual: .manual(lowHz: manualLowHz, highHz: manualHighHz)
+        }
+    }
+
     private var pinkNoiseModeControl: some View {
-        Picker("", selection: $pinkNoiseMode) {
-            ForEach(PinkNoiseMode.allCases) { mode in
-                Text(mode.rawValue).tag(mode)
+        Picker("", selection: $pinkNoiseModeFamily) {
+            ForEach(PinkNoiseModeFamily.allCases) { family in
+                Text(family.rawValue).tag(family)
             }
         }
         .pickerStyle(.segmented)
+    }
+
+    /// Always renders all three sub-controls (band-limited preset picker, manual range
+    /// fields, 1/3-octave band stepper), each independently opacity/disabled-gated — same
+    /// "always reserve, never remove" principle as `frequencyControl`, so the fixed-size
+    /// window never reflows regardless of which Pink sub-mode is active.
+    private var pinkNoiseModeDetailControl: some View {
+        HStack {
+            Picker("", selection: $bandLimitedPresetSelection) {
+                ForEach(BandLimitedPresetSelection.allCases) { preset in
+                    Text(preset.rawValue).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .opacity(pinkNoiseModeFamily == .bandLimited ? 1 : 0)
+            .disabled(pinkNoiseModeFamily != .bandLimited)
+
+            manualRangeFields
+                .opacity(pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual ? 1 : 0)
+                .disabled(!(pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual))
+
+            thirdOctaveBandControl
+                .opacity(pinkNoiseModeFamily == .thirdOctave ? 1 : 0)
+                .disabled(pinkNoiseModeFamily != .thirdOctave)
+        }
+    }
+
+    /// Binds to the *draft* values, not `manualLowHz`/`manualHighHz` directly — commits
+    /// only fire on Return or on losing focus, not per keystroke (see the state
+    /// declarations above for why).
+    private var manualRangeFields: some View {
+        HStack(spacing: 4) {
+            TextField("Low", value: $manualLowHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 55)
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .focused($manualRangeFieldFocus, equals: .low)
+                .onSubmit { commitManualLowHz() }
+            Text("–")
+                .foregroundStyle(.secondary)
+            TextField("High", value: $manualHighHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 55)
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .focused($manualRangeFieldFocus, equals: .high)
+                .onSubmit { commitManualHighHz() }
+        }
+        .onChange(of: manualRangeFieldFocus) { oldValue, newValue in
+            if oldValue == .low && newValue != .low { commitManualLowHz() }
+            if oldValue == .high && newValue != .high { commitManualHighHz() }
+        }
+    }
+
+    private var thirdOctaveBandControl: some View {
+        HStack {
+            Text(ThirdOctaveBands.label(for: ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]))
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 55)
+
+            // Left/right, matching the frequency field's own arrow-key/chevron pattern —
+            // safe to share the same global shortcuts since only one of the two control
+            // sets is ever enabled at a time (Sine vs. Pink + 1/3-Octave).
+            HStack(spacing: 4) {
+                Button {
+                    stepThirdOctaveBand(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .help("Previous 1/3-octave band (←)")
+
+                Button {
+                    stepThirdOctaveBand(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .help("Next 1/3-octave band (→)")
+            }
+            .buttonStyle(.bordered)
+        }
     }
 
     private var levelControl: some View {
@@ -393,6 +546,49 @@ struct ContentView: View {
 
     private func stepFrequency(_ direction: Int) {
         frequencyHz = ThirdOctaveBands.step(from: frequencyHz, direction: direction)
+    }
+
+    private func commitManualLowHz() {
+        manualLowHz = min(max(manualLowHzDraft, 20), manualHighHz - 1)
+        manualLowHzDraft = manualLowHz
+    }
+
+    private func commitManualHighHz() {
+        manualHighHz = max(min(manualHighHzDraft, 20000), manualLowHz + 1)
+        manualHighHzDraft = manualHighHz
+    }
+
+    private func stepThirdOctaveBand(_ direction: Int) {
+        let currentHz = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
+        let newHz = ThirdOctaveBands.step(from: currentHz, direction: direction)
+        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? thirdOctaveBandIndex
+    }
+
+    /// Decomposes a loaded `PinkNoiseMode` back into the separate UI-facing family/preset/
+    /// band state — the inverse of the `pinkNoiseMode`/`bandLimitedPreset` computed
+    /// properties above.
+    private func applyLoadedPinkNoiseMode(_ mode: PinkNoiseMode) {
+        switch mode {
+        case .fullRange:
+            pinkNoiseModeFamily = .fullRange
+        case .bandLimited(let preset):
+            pinkNoiseModeFamily = .bandLimited
+            switch preset {
+            case .preset0to200Hz: bandLimitedPresetSelection = .preset0to200Hz
+            case .preset200HzTo1kHz: bandLimitedPresetSelection = .preset200HzTo1kHz
+            case .preset1kTo20kHz: bandLimitedPresetSelection = .preset1kTo20kHz
+            case .preset7kTo20kHz: bandLimitedPresetSelection = .preset7kTo20kHz
+            case .manual(let lowHz, let highHz):
+                bandLimitedPresetSelection = .manual
+                manualLowHz = lowHz
+                manualHighHz = highHz
+                manualLowHzDraft = lowHz
+                manualHighHzDraft = highHz
+            }
+        case .thirdOctave(let bandIndex):
+            pinkNoiseModeFamily = .thirdOctave
+            thirdOctaveBandIndex = bandIndex
+        }
     }
 
     private func adjustLevel(_ direction: Int) {

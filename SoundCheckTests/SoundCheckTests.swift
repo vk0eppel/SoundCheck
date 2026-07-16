@@ -13,6 +13,14 @@ import Foundation
 import Testing
 @testable import SoundCheck
 
+/// Shared by `steadyStateGain` so it can probe either a single `Biquad` or a
+/// `BandLimitedFilterChain` with the same test helper.
+private protocol SampleFilter {
+    mutating func process(_ x: Double) -> Double
+}
+extension Biquad: SampleFilter {}
+extension BandLimitedFilterChain: SampleFilter {}
+
 struct SoundCheckTests {
 
 #if os(macOS)
@@ -35,7 +43,7 @@ struct SoundCheckTests {
             $0.frequencyHz = 630
             $0.levelDbfs = -12.5
             $0.selectedDeviceUID = "device-uid-1"
-            $0.pinkNoiseMode = .bandLimited
+            $0.pinkNoiseMode = .bandLimited(.preset200HzTo1kHz)
             $0.channelStatesByDeviceUID["device-uid-1"] = [
                 PersistedChannelState(muted: false, phaseReversed: true),
                 PersistedChannelState(muted: true, phaseReversed: false),
@@ -46,7 +54,7 @@ struct SoundCheckTests {
         #expect(secondLaunch.snapshot == firstLaunch.snapshot)
         #expect(secondLaunch.snapshot.signalType == .pink)
         #expect(secondLaunch.snapshot.selectedDeviceUID == "device-uid-1")
-        #expect(secondLaunch.snapshot.pinkNoiseMode == .bandLimited)
+        #expect(secondLaunch.snapshot.pinkNoiseMode == .bandLimited(.preset200HzTo1kHz))
     }
 
     @MainActor
@@ -171,28 +179,68 @@ struct SoundCheckTests {
         #expect(abs(actualRatio - 0.1) < 0.01)
     }
 
-    @Test func pinkNoiseModeDoesNotYetAlterOutput() async throws {
+    @Test func bandLimitedFilterChainRealizesEachPresetsEdges() async throws {
         let sampleRate = 48000.0
-        let frameCount = 4800
 
-        func render(mode: PinkNoiseMode) -> [Float] {
-            let core = SignalRenderCore()
-            core.updateParameters {
-                $0.generatorKind = .pink
-                $0.levelDbfs = 0
-                $0.running = true
-                $0.channelMuted = [false]
-                $0.channelPhaseReversed = [false]
-                $0.pinkNoiseMode = mode
-            }
-            return Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)[0]
+        func gain(_ preset: BandLimitedPreset, probeHz: Double) -> Double {
+            Self.steadyStateGain(
+                BandLimitedFilterChain(preset: preset, sampleRate: sampleRate),
+                probeFrequencyHz: probeHz, sampleRate: sampleRate
+            )
         }
 
-        // No mode filters yet (that's #22/#23's job) -- every mode must render
-        // bit-identically to .fullRange, i.e. unchanged from today's V1 pink noise.
-        let fullRange = render(mode: .fullRange)
-        #expect(render(mode: .bandLimited) == fullRange)
-        #expect(render(mode: .thirdOctave) == fullRange)
+        // 0-200Hz: lowpass-only -- passes low, attenuates well above the edge.
+        #expect(gain(.preset0to200Hz, probeHz: 100) > 0.8)
+        #expect(gain(.preset0to200Hz, probeHz: 5000) < 0.1)
+
+        // 200Hz-1kHz: highpass+lowpass -- passes mid, attenuates both outer sides.
+        #expect(gain(.preset200HzTo1kHz, probeHz: 500) > 0.8)
+        #expect(gain(.preset200HzTo1kHz, probeHz: 50) < 0.1)
+        #expect(gain(.preset200HzTo1kHz, probeHz: 10000) < 0.1)
+
+        // 1k-20kHz: highpass-only -- attenuates low, passes high.
+        #expect(gain(.preset1kTo20kHz, probeHz: 100) < 0.1)
+        #expect(gain(.preset1kTo20kHz, probeHz: 5000) > 0.8)
+
+        // 7k-20kHz: highpass-only, narrower -- attenuates low, passes high.
+        #expect(gain(.preset7kTo20kHz, probeHz: 500) < 0.1)
+        #expect(gain(.preset7kTo20kHz, probeHz: 15000) > 0.8)
+
+        // Manual range behaves like any other two-edge preset.
+        #expect(gain(.manual(lowHz: 2000, highHz: 4000), probeHz: 3000) > 0.8)
+        #expect(gain(.manual(lowHz: 2000, highHz: 4000), probeHz: 200) < 0.1)
+    }
+
+    @Test func thirdOctaveBandpassMatchesConfiguredBand() async throws {
+        let sampleRate = 48000.0
+
+        // Bands chosen so `centerHz * 8` (the far-probe frequency below) stays well
+        // under this sample rate's Nyquist limit -- a probe above Nyquist would alias
+        // back into the passband and give a spurious "not attenuated" result.
+        for centerHz in [100.0, 630.0, 2000.0] {
+            let filter = Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveBandpassQ, sampleRate: sampleRate)
+
+            let centerGain = Self.steadyStateGain(filter, probeFrequencyHz: centerHz, sampleRate: sampleRate)
+            let farGain = Self.steadyStateGain(filter, probeFrequencyHz: centerHz * 8, sampleRate: sampleRate)
+
+            #expect(abs(centerGain - 1) < 0.05)
+            #expect(farGain < 0.1)
+        }
+    }
+
+    @MainActor
+    @Test func pinkNoiseModeAssociatedValuesSurviveARelaunch() async throws {
+        let suiteName = "SettingsStoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manualStore = SettingsStore(defaults: defaults)
+        manualStore.update { $0.pinkNoiseMode = .bandLimited(.manual(lowHz: 250, highHz: 3500)) }
+        #expect(SettingsStore(defaults: defaults).snapshot.pinkNoiseMode == .bandLimited(.manual(lowHz: 250, highHz: 3500)))
+
+        let thirdOctaveStore = SettingsStore(defaults: defaults)
+        thirdOctaveStore.update { $0.pinkNoiseMode = .thirdOctave(bandIndex: 17) }
+        #expect(SettingsStore(defaults: defaults).snapshot.pinkNoiseMode == .thirdOctave(bandIndex: 17))
     }
 
     @Test func biquadLowpassPassesBelowAndAttenuatesAboveCutoff() async throws {
@@ -200,11 +248,11 @@ struct SoundCheckTests {
         let cutoffHz = 1000.0
 
         let passGain = Self.steadyStateGain(
-            biquad: Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
             probeFrequencyHz: 100, sampleRate: sampleRate
         )
         let stopGain = Self.steadyStateGain(
-            biquad: Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            Biquad(type: .lowpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
             probeFrequencyHz: 8000, sampleRate: sampleRate
         )
 
@@ -217,11 +265,11 @@ struct SoundCheckTests {
         let cutoffHz = 1000.0
 
         let stopGain = Self.steadyStateGain(
-            biquad: Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
             probeFrequencyHz: 100, sampleRate: sampleRate
         )
         let passGain = Self.steadyStateGain(
-            biquad: Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
+            Biquad(type: .highpass, f0: cutoffHz, q: 0.7071, sampleRate: sampleRate),
             probeFrequencyHz: 8000, sampleRate: sampleRate
         )
 
@@ -236,7 +284,7 @@ struct SoundCheckTests {
 
         func gain(at probeHz: Double) -> Double {
             Self.steadyStateGain(
-                biquad: Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveQ, sampleRate: sampleRate),
+                Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveQ, sampleRate: sampleRate),
                 probeFrequencyHz: probeHz, sampleRate: sampleRate
             )
         }
@@ -260,10 +308,13 @@ struct SoundCheckTests {
         #expect(maxAbsOutput < 10)
     }
 
-    /// Feeds a sine probe through a copy of `biquad` and returns the steady-state
-    /// output/input RMS ratio, skipping enough initial samples for the filter to settle.
-    private static func steadyStateGain(biquad: Biquad, probeFrequencyHz: Double, sampleRate: Double) -> Double {
-        var biquad = biquad
+    /// Feeds a sine probe through a copy of `filter` (a `Biquad` or `BandLimitedFilterChain`)
+    /// and returns the steady-state output/input RMS ratio, skipping enough initial samples
+    /// for the filter to settle.
+    private static func steadyStateGain<Filter: SampleFilter>(
+        _ filter: Filter, probeFrequencyHz: Double, sampleRate: Double
+    ) -> Double {
+        var filter = filter
         let totalSamples = 8192
         let settleSamples = 4096
 
@@ -271,7 +322,7 @@ struct SoundCheckTests {
         var outputSumSquares = 0.0
         for n in 0..<totalSamples {
             let x = sin(2 * Double.pi * probeFrequencyHz * Double(n) / sampleRate)
-            let y = biquad.process(x)
+            let y = filter.process(x)
             if n >= settleSamples {
                 inputSumSquares += x * x
                 outputSumSquares += y * y

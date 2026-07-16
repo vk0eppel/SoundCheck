@@ -72,15 +72,34 @@ final class PinkNoiseGenerator: SignalGenerator {
     private var b5: Double = 0
     private var b6: Double = 0
 
+    // Rebuilt only when `pinkNoiseMode` actually changes (never per sample) — see
+    // docs/research/band-limited-noise-generation.md and
+    // docs/research/one-third-octave-noise-generation.md.
+    private var currentMode: PinkNoiseMode = .fullRange
+    private var bandLimitedFilter: BandLimitedFilterChain?
+    private var thirdOctaveFilter: Biquad?
+
     init(seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
         white = WhiteNoiseGenerator(seed: seed)
     }
 
-    /// #22/#23 will filter here based on `parameters.pinkNoiseMode` (a band-limited
-    /// Biquad cascade / a 1/3-octave Biquad bandpass, respectively). Neither mode applies
-    /// any filtering yet, so pink noise stays bit-identical to V1 regardless of the
-    /// selected mode.
     func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        if parameters.pinkNoiseMode != currentMode {
+            currentMode = parameters.pinkNoiseMode
+            switch currentMode {
+            case .fullRange:
+                bandLimitedFilter = nil
+                thirdOctaveFilter = nil
+            case .bandLimited(let preset):
+                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate)
+                thirdOctaveFilter = nil
+            case .thirdOctave(let bandIndex):
+                let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
+                thirdOctaveFilter = Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveBandpassQ, sampleRate: sampleRate)
+                bandLimitedFilter = nil
+            }
+        }
+
         let whiteSample = white.nextSample(parameters: parameters, sampleRate: sampleRate)
         b0 = 0.99886 * b0 + whiteSample * 0.0555179
         b1 = 0.99332 * b1 + whiteSample * 0.0750759
@@ -88,9 +107,17 @@ final class PinkNoiseGenerator: SignalGenerator {
         b3 = 0.86650 * b3 + whiteSample * 0.3104856
         b4 = 0.55000 * b4 + whiteSample * 0.5329522
         b5 = -0.7616 * b5 - whiteSample * 0.0168980
-        let pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362
+        let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362) * 0.11
         b6 = whiteSample * 0.115926
-        return pink * 0.11
+
+        switch currentMode {
+        case .fullRange:
+            return pink
+        case .bandLimited:
+            return bandLimitedFilter?.process(pink) ?? pink
+        case .thirdOctave:
+            return thirdOctaveFilter?.process(pink) ?? pink
+        }
     }
 }
 
@@ -103,16 +130,69 @@ enum GeneratorKind: Equatable, Sendable {
 }
 
 /// A sub-mode of the Pink generator, not a `GeneratorKind` of its own — band-limited and
-/// 1/3-octave noise are both still "Pink," just spectrally shaped. `.bandLimited` and
-/// `.thirdOctave` carry no configuration yet; #22 and #23 respectively will add it
-/// (e.g. `case bandLimited(BandLimitedPreset)`) once they give each mode real filtering.
-enum PinkNoiseMode: String, Equatable, Sendable, Codable, CaseIterable, Identifiable {
-    case fullRange = "FULL-RANGE"
-    case bandLimited = "BAND-LIMITED"
-    case thirdOctave = "1/3-OCTAVE"
-
-    var id: String { rawValue }
+/// 1/3-octave noise are both still "Pink," just spectrally shaped.
+enum PinkNoiseMode: Equatable, Sendable, Codable {
+    case fullRange
+    case bandLimited(BandLimitedPreset)
+    case thirdOctave(bandIndex: Int)
 }
+
+/// The 5 band-limited presets (#22), each an optional highpass edge and/or optional
+/// lowpass edge — see docs/research/band-limited-noise-generation.md's "unified two-edge
+/// framework." `nil` means that edge is skipped entirely (e.g. 0-200Hz has no lower edge).
+enum BandLimitedPreset: Equatable, Sendable, Codable {
+    case preset0to200Hz
+    case preset200HzTo1kHz
+    case preset1kTo20kHz
+    case preset7kTo20kHz
+    case manual(lowHz: Double, highHz: Double)
+
+    var edges: (highpassHz: Double?, lowpassHz: Double?) {
+        switch self {
+        case .preset0to200Hz: (nil, 200)
+        case .preset200HzTo1kHz: (200, 1000)
+        case .preset1kTo20kHz: (1000, nil)
+        case .preset7kTo20kHz: (7000, nil)
+        case .manual(let lowHz, let highHz): (lowHz, highHz)
+        }
+    }
+}
+
+/// Cascades `Biquad` sections realizing a `BandLimitedPreset`'s optional highpass and/or
+/// lowpass edge, each edge a 4th-order (2-section) Butterworth cascade — the standard
+/// per-section Q values from docs/research/band-limited-noise-generation.md.
+struct BandLimitedFilterChain {
+    private static let butterworth4thOrderQs: [Double] = [0.54120, 1.30656]
+
+    private var sections: [Biquad] = []
+
+    init(preset: BandLimitedPreset, sampleRate: Double) {
+        let edges = preset.edges
+        if let highpassHz = edges.highpassHz {
+            sections += Self.butterworth4thOrderQs.map {
+                Biquad(type: .highpass, f0: highpassHz, q: $0, sampleRate: sampleRate)
+            }
+        }
+        if let lowpassHz = edges.lowpassHz {
+            sections += Self.butterworth4thOrderQs.map {
+                Biquad(type: .lowpass, f0: lowpassHz, q: $0, sampleRate: sampleRate)
+            }
+        }
+    }
+
+    mutating func process(_ x: Double) -> Double {
+        var y = x
+        for index in sections.indices {
+            y = sections[index].process(y)
+        }
+        return y
+    }
+}
+
+/// Q for a fixed 1/3-octave-wide bandpass (#23), from the RBJ cookbook's Q/bandwidth
+/// relation `1/Q = 2*sinh(ln2/2 * BW)` evaluated at BW = 1/3 octave. See
+/// docs/research/one-third-octave-noise-generation.md.
+let thirdOctaveBandpassQ = 1 / (2 * sinh(log(2) / 2 * (1.0 / 3)))
 
 struct RenderParameters: Equatable, Sendable {
     var generatorKind: GeneratorKind = .sine
