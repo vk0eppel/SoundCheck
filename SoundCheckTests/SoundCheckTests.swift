@@ -20,6 +20,7 @@ private protocol SampleFilter {
 }
 extension Biquad: SampleFilter {}
 extension BandLimitedFilterChain: SampleFilter {}
+extension ThirdOctaveFilterChain: SampleFilter {}
 
 struct SoundCheckTests {
 
@@ -234,20 +235,27 @@ struct SoundCheckTests {
         #expect(gain(.manual(lowHz: 2000, highHz: 4000), probeHz: 200) < 0.1)
     }
 
-    @Test func thirdOctaveBandpassMatchesConfiguredBand() async throws {
+    @Test func thirdOctaveFilterChainRealizesConfiguredBand() async throws {
         let sampleRate = 48000.0
 
-        // Bands chosen so `centerHz * 8` (the far-probe frequency below) stays well
-        // under this sample rate's Nyquist limit -- a probe above Nyquist would alias
-        // back into the passband and give a spurious "not attenuated" result.
+        // Bands chosen so probe frequencies several octaves either side stay well under
+        // this sample rate's Nyquist limit -- a probe above Nyquist would alias back into
+        // the passband and give a spurious "not attenuated" result.
         for centerHz in [100.0, 630.0, 2000.0] {
-            let filter = Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveBandpassQ, sampleRate: sampleRate)
+            func gain(_ probeHz: Double) -> Double {
+                Self.steadyStateGain(
+                    ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate),
+                    probeFrequencyHz: probeHz, sampleRate: sampleRate
+                )
+            }
 
-            let centerGain = Self.steadyStateGain(filter, probeFrequencyHz: centerHz, sampleRate: sampleRate)
-            let farGain = Self.steadyStateGain(filter, probeFrequencyHz: centerHz * 8, sampleRate: sampleRate)
-
-            #expect(abs(centerGain - 1) < 0.05)
-            #expect(farGain < 0.1)
+            // Center measures a modest, expected dip (~-0.2dB) from the two edges'
+            // transition bands slightly overlapping this close together -- not the exact
+            // unity gain the earlier single-bandpass-biquad design gave, but close.
+            #expect(abs(gain(centerHz) - 1) < 0.05)
+            // Well attenuated two octaves either side of center.
+            #expect(gain(centerHz / 4) < 0.05)
+            #expect(gain(centerHz * 4) < 0.05)
         }
     }
 

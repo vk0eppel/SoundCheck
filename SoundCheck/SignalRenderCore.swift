@@ -77,7 +77,7 @@ final class PinkNoiseGenerator: SignalGenerator {
     // docs/research/one-third-octave-noise-generation.md.
     private var currentMode: PinkNoiseMode = .fullRange
     private var bandLimitedFilter: BandLimitedFilterChain?
-    private var thirdOctaveFilter: Biquad?
+    private var thirdOctaveFilter: ThirdOctaveFilterChain?
 
     init(seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
         white = WhiteNoiseGenerator(seed: seed)
@@ -95,7 +95,7 @@ final class PinkNoiseGenerator: SignalGenerator {
                 thirdOctaveFilter = nil
             case .thirdOctave(let bandIndex):
                 let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
-                thirdOctaveFilter = Biquad(type: .bandpass, f0: centerHz, q: thirdOctaveBandpassQ, sampleRate: sampleRate)
+                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
                 bandLimitedFilter = nil
             }
         }
@@ -200,10 +200,40 @@ struct BandLimitedFilterChain {
     }
 }
 
-/// Q for a fixed 1/3-octave-wide bandpass (#23), from the RBJ cookbook's Q/bandwidth
-/// relation `1/Q = 2*sinh(ln2/2 * BW)` evaluated at BW = 1/3 octave. See
-/// docs/research/one-third-octave-noise-generation.md.
-let thirdOctaveBandpassQ = 1 / (2 * sinh(log(2) / 2 * (1.0 / 3)))
+/// Cascades a highpass edge at `centerHz / 2^(1/6)` and a lowpass edge at `centerHz * 2^(1/6)`
+/// -- the standard ISO 266 1/3-octave band boundaries -- each a 16th-order (8-section)
+/// Butterworth cascade, replacing an earlier single fixed-Q bandpass `Biquad` design. See
+/// docs/research/one-third-octave-noise-generation.md's "Two-edge Butterworth cascade"
+/// addendum for why: naive identical-bandpass-section cascading didn't scale slope cleanly,
+/// while this two-edge shape (same topology `BandLimitedFilterChain` already uses, just at
+/// the ISO 1/3-octave edges instead of a preset's edges) measured a consistent ~-0.2dB center
+/// dip and steeper skirts than an 8th-order version of the same shape.
+struct ThirdOctaveFilterChain {
+    private static let butterworth16thOrderQs: [Double] = [
+        0.50242, 0.52250, 0.56694, 0.64682, 0.78815, 1.06068, 1.72245, 5.10115,
+    ]
+
+    private var sections: [Biquad] = []
+
+    init(centerHz: Double, sampleRate: Double) {
+        let lowEdge = centerHz / pow(2, 1.0 / 6.0)
+        let highEdge = centerHz * pow(2, 1.0 / 6.0)
+        sections = Self.butterworth16thOrderQs.map {
+            Biquad(type: .highpass, f0: lowEdge, q: $0, sampleRate: sampleRate)
+        }
+        sections += Self.butterworth16thOrderQs.map {
+            Biquad(type: .lowpass, f0: highEdge, q: $0, sampleRate: sampleRate)
+        }
+    }
+
+    mutating func process(_ x: Double) -> Double {
+        var y = x
+        for index in sections.indices {
+            y = sections[index].process(y)
+        }
+        return y
+    }
+}
 
 /// Kellett's `0.11` scaling constant was chosen to keep pink noise's *peak* roughly bounded
 /// for a full-scale white noise input, not to match its RMS (perceived loudness) to Sine's
