@@ -41,6 +41,43 @@ final class SineGenerator: SignalGenerator {
     }
 }
 
+/// A continuous logarithmic sweep across the app's fixed 20Hz-20kHz range — see
+/// docs/v1-spec.md's "V2 addendum: sine sweep". `elapsedSamples` is audio-thread-only
+/// state tracking position within the configured `sweepDurationSeconds`; instantaneous
+/// frequency is `20 * (20000/20)^t` where `t` is elapsed time normalized by duration.
+/// Reaching `t = 1.0` wraps instantly back to `t = 0` (an abrupt frequency drop, not a
+/// waveform discontinuity -- phase itself free-runs continuously across the wrap, exactly
+/// as it does across a normal Sine's steady state). `reset()` zeroes `elapsedSamples` so
+/// every fresh ON press restarts from 20Hz rather than resuming mid-sweep, per ADR 0004.
+final class SweepGenerator: SignalGenerator {
+    private static let startHz: Double = 20
+    private static let endHz: Double = 20000
+
+    private var elapsedSamples: Double = 0
+    private var phase: Double = 0
+
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        let totalSamples = max(parameters.sweepDurationSeconds, 0.001) * sampleRate
+        let t = elapsedSamples / totalSamples
+        let instantaneousFrequencyHz = Self.startHz * pow(Self.endHz / Self.startHz, t)
+
+        let sample = sin(phase)
+        phase += 2 * .pi * instantaneousFrequencyHz / sampleRate
+        if phase > 2 * .pi { phase -= 2 * .pi }
+
+        elapsedSamples += 1
+        if elapsedSamples >= totalSamples {
+            elapsedSamples -= totalSamples
+        }
+
+        return sample
+    }
+
+    func reset() {
+        elapsedSamples = 0
+    }
+}
+
 /// xorshift64* — fast, non-cryptographic, real-time-safe. Not SystemRandomNumberGenerator,
 /// which draws from OS entropy per call and isn't real-time-safe. See docs/research/pink-white-noise-generation.md.
 final class WhiteNoiseGenerator: SignalGenerator {
@@ -127,6 +164,7 @@ enum GeneratorKind: Equatable, Sendable {
     case sine
     case pink
     case white
+    case sweep
 }
 
 /// A sub-mode of the Pink generator, not a `GeneratorKind` of its own — band-limited and
@@ -271,6 +309,7 @@ struct RenderParameters: Equatable, Sendable {
     var channelMuted: [Bool] = []
     var channelPhaseReversed: [Bool] = []
     var pinkNoiseMode: PinkNoiseMode = .fullRange
+    var sweepDurationSeconds: Double = 10
 }
 
 // MARK: - Render core
@@ -288,6 +327,7 @@ final class SignalRenderCore: @unchecked Sendable {
     nonisolated(unsafe) private let sineGenerator = SineGenerator()
     nonisolated(unsafe) private let pinkGenerator = PinkNoiseGenerator()
     nonisolated(unsafe) private let whiteGenerator = WhiteNoiseGenerator()
+    nonisolated(unsafe) private let sweepGenerator = SweepGenerator()
     nonisolated(unsafe) private var rampGain: Double = 0
     // Only adopted from `RenderParameters.generatorKind` once `rampGain` reaches silence —
     // otherwise a signal-type switch mid-ramp would audibly fade out the *new* generator
@@ -344,6 +384,7 @@ final class SignalRenderCore: @unchecked Sendable {
         case .sine: sineGenerator
         case .pink: pinkGenerator
         case .white: whiteGenerator
+        case .sweep: sweepGenerator
         }
     }
 

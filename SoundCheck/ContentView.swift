@@ -18,6 +18,7 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
     case sine = "SINE"
     case pink = "PINK"
     case white = "WHITE"
+    case sweep = "SWEEP"
 
     var id: String { rawValue }
 
@@ -26,6 +27,7 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
         case .sine: .sine
         case .pink: .pink
         case .white: .white
+        case .sweep: .sweep
         }
     }
 }
@@ -151,6 +153,7 @@ struct ContentView: View {
     // `manualLowHz`/`manualHighHz` above.
     @State private var thirdOctaveHzDraft: Double = 1000
     @FocusState private var thirdOctaveFieldFocused: Bool
+    @State private var sweepDurationSeconds: Double = 10
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
@@ -231,11 +234,13 @@ struct ContentView: View {
             frequencyHz = snapshot.frequencyHz
             levelDbfs = snapshot.levelDbfs
             applyLoadedPinkNoiseMode(snapshot.pinkNoiseMode)
+            sweepDurationSeconds = snapshot.sweepDurationSeconds
             engineController.renderCore.updateParameters {
                 $0.generatorKind = snapshot.signalType.generatorKind
                 $0.frequencyHz = snapshot.frequencyHz
                 $0.levelDbfs = snapshot.levelDbfs
                 $0.pinkNoiseMode = snapshot.pinkNoiseMode
+                $0.sweepDurationSeconds = snapshot.sweepDurationSeconds
             }
 
             if let savedUID = snapshot.selectedDeviceUID, deviceCatalog.devices.contains(where: { $0.uid == savedUID }) {
@@ -263,6 +268,10 @@ struct ContentView: View {
             // forces a full stop (ADR 0003), not a change within Pink's sub-modes.
             engineController.renderCore.updateParameters { $0.pinkNoiseMode = newValue }
             settingsStore.update { $0.pinkNoiseMode = newValue }
+        }
+        .onChange(of: sweepDurationSeconds) { _, newValue in
+            engineController.renderCore.updateParameters { $0.sweepDurationSeconds = newValue }
+            settingsStore.update { $0.sweepDurationSeconds = newValue }
         }
         .onChange(of: channels) { _, newValue in
             engineController.renderCore.updateParameters {
@@ -324,6 +333,8 @@ struct ContentView: View {
             rangeControl
         } else if signalType == .pink && pinkNoiseModeFamily == .thirdOctave {
             thirdOctaveFrequencyControl
+        } else if signalType == .sweep {
+            durationControl
         } else {
             frequencyControl
         }
@@ -334,6 +345,7 @@ struct ContentView: View {
         case .sine: true
         case .pink: pinkNoiseModeFamily == .bandLimited || pinkNoiseModeFamily == .thirdOctave
         case .white: false
+        case .sweep: true
         }
     }
 
@@ -507,6 +519,51 @@ struct ContentView: View {
         }
     }
 
+    /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl`/
+    /// `rangeControl` do — Sweep's duration field. No `SettingsStore`-free draft state
+    /// (unlike the manual-range/1/3-octave fields): duration applies live per keystroke,
+    /// same as Level, since there's no filter-coefficient rebuild to protect against
+    /// intermediate values here. Uses left/right (not Level's up/down) to avoid a
+    /// keyboard-shortcut collision with the always-visible Level stepper, matching this
+    /// slot's existing left/right convention from Frequency's prev/next chevrons.
+    private var durationControl: some View {
+        HStack {
+            Text("Duration")
+
+            TextField("s", value: $sweepDurationSeconds, format: .number.grouping(.never).precision(.fractionLength(0...2)))
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 70)
+                .multilineTextAlignment(.center)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: sweepDurationSeconds) { _, newValue in
+                    sweepDurationSeconds = min(max(newValue, 1), 60)
+                }
+            Text("s")
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 4) {
+                Button {
+                    adjustSweepDuration(-1)
+                } label: {
+                    Image(systemName: "minus")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .help("Decrease duration by 1s (←)")
+
+                Button {
+                    adjustSweepDuration(1)
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .help("Increase duration by 1s (→)")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
     private var levelControl: some View {
         HStack {
             Text("Level")
@@ -658,6 +715,10 @@ struct ContentView: View {
 
     private func adjustLevel(_ direction: Int) {
         levelDbfs = min(max(levelDbfs + Double(direction), -99), 0)
+    }
+
+    private func adjustSweepDuration(_ direction: Int) {
+        sweepDurationSeconds = min(max(sweepDurationSeconds + Double(direction), 1), 60)
     }
 
     private func selectDeviceIfNeeded() {

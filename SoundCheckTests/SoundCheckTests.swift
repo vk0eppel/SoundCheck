@@ -203,6 +203,116 @@ struct SoundCheckTests {
         #expect(abs(actualRatio - 0.1) < 0.01)
     }
 
+    @Test func sweepGeneratorFollowsLogarithmicCurve() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        let duration = 2.0
+        core.updateParameters {
+            $0.generatorKind = .sweep
+            $0.sweepDurationSeconds = duration
+            $0.levelDbfs = 0
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        // Adopting a newly-selected generatorKind only happens inside `render()`, at the
+        // instant it observes `rampGain == 0` — exactly like ContentView's real sequencing
+        // (signal type is set while `running` is still false; only a later, separate ON
+        // press flips `running`). Render one silent frame first so `.sweep` is actually
+        // adopted before flipping `running`, matching that real sequencing.
+        _ = Self.renderToArrays(core, frameCount: 1, channelCount: 1, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+
+        let totalSamples = Int(duration * sampleRate)
+        let channels = Self.renderToArrays(core, frameCount: totalSamples, channelCount: 1, sampleRate: sampleRate)
+        let samples = channels[0]
+
+        func expectedHz(atSampleIndex index: Int) -> Double {
+            let t = Double(index) / Double(totalSamples)
+            return 20 * pow(1000, t)
+        }
+
+        // Start, mid, and (just before wrap) end of the configured duration — the
+        // instantaneous frequency should approximate `20 * (20000/20)^t` throughout.
+        for index in [3000, totalSamples / 2, totalSamples - 200] {
+            let expected = expectedHz(atSampleIndex: index)
+            let measured = Self.measuredFrequencyHz(centeredAt: index, expectedHz: expected, samples: samples, sampleRate: sampleRate)
+            #expect(!measured.isNaN, "no zero crossings found near sample \(index)")
+            #expect(abs(measured - expected) / expected < 0.25)
+        }
+    }
+
+    @Test func sweepWrapsInstantlyBackTo20HzAfterOneFullDuration() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        let duration = 1.0
+        core.updateParameters {
+            $0.generatorKind = .sweep
+            $0.sweepDurationSeconds = duration
+            $0.levelDbfs = 0
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        // See `sweepGeneratorFollowsLogarithmicCurve` for why this precedes flipping `running`.
+        _ = Self.renderToArrays(core, frameCount: 1, channelCount: 1, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+
+        let totalSamples = Int(duration * sampleRate)
+        let channels = Self.renderToArrays(core, frameCount: totalSamples + 10000, channelCount: 1, sampleRate: sampleRate)
+        let samples = channels[0]
+
+        // Just after the wrap point, frequency should have jumped straight back down to
+        // ~20Hz, not continued climbing toward/past 20kHz. Measured one-sided (forward
+        // only) from the wrap, using the second post-wrap cycle (skipping the first,
+        // transitional one spanning the instant frequency jump) so the estimate reflects
+        // the fresh-post-wrap frequency rather than blending in pre-wrap high-frequency
+        // content the way a centered window would.
+        var crossingIndices: [Int] = []
+        var i = totalSamples
+        while crossingIndices.count < 3 && i < samples.count - 1 {
+            if samples[i] <= 0 && samples[i + 1] > 0 {
+                crossingIndices.append(i)
+            }
+            i += 1
+        }
+        #expect(crossingIndices.count == 3, "expected 3 zero crossings shortly after the wrap")
+        let secondCycleSamples = Double(crossingIndices[2] - crossingIndices[1])
+        let measured = sampleRate / secondCycleSamples
+        #expect(measured < 40)
+    }
+
+    @Test func sweepRestartsFrom20HzAfterAFullStopAndRestart() async throws {
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+        core.updateParameters {
+            $0.generatorKind = .sweep
+            $0.sweepDurationSeconds = 5
+            $0.levelDbfs = 0
+            $0.running = true
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+
+        // Run well into the sweep, away from a duration boundary, so frequency has
+        // climbed well past 20Hz before stopping.
+        _ = Self.renderToArrays(core, frameCount: Int(2.5 * sampleRate), channelCount: 1, sampleRate: sampleRate)
+
+        // Stop and let the ramp fully silence -- this is the point `reset()` fires
+        // (see `SignalRenderCore.render`'s `rampGain == 0` check), zeroing the sweep's
+        // elapsed-sample counter.
+        core.updateParameters { $0.running = false }
+        _ = Self.renderToArrays(core, frameCount: Int(0.05 * sampleRate), channelCount: 1, sampleRate: sampleRate)
+
+        core.updateParameters { $0.running = true }
+        let channels = Self.renderToArrays(core, frameCount: 20000, channelCount: 1, sampleRate: sampleRate)
+        let samples = channels[0]
+
+        // Shortly after restart, frequency should be back near 20Hz, not resuming from
+        // wherever the sweep had reached before the stop.
+        let measured = Self.measuredFrequencyHz(centeredAt: 8000, expectedHz: 20, samples: samples, sampleRate: sampleRate)
+        #expect(!measured.isNaN)
+        #expect(measured < 40)
+    }
+
     @Test func bandLimitedFilterChainRealizesEachPresetsEdges() async throws {
         let sampleRate = 48000.0
 
@@ -439,6 +549,29 @@ struct SoundCheckTests {
         let inputRMS = (inputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
         let outputRMS = (outputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
         return outputRMS / inputRMS
+    }
+
+    /// Estimates instantaneous frequency from positive-going zero-crossing spacing in a
+    /// window around `centerIndex`, sized to a few periods of `expectedHz` so the sweep's
+    /// continuously-changing frequency stays locally near-constant across the window.
+    private static func measuredFrequencyHz(
+        centeredAt centerIndex: Int, expectedHz: Double, samples: [Float], sampleRate: Double
+    ) -> Double {
+        let periodSamples = sampleRate / expectedHz
+        let radius = max(Int(periodSamples * 3), 50)
+        let lower = max(0, centerIndex - radius)
+        let upper = min(samples.count - 2, centerIndex + radius)
+        guard lower < upper else { return .nan }
+
+        var crossingIndices: [Int] = []
+        for i in lower...upper where samples[i] <= 0 && samples[i + 1] > 0 {
+            crossingIndices.append(i)
+        }
+        guard crossingIndices.count >= 2 else { return .nan }
+
+        let intervals = zip(crossingIndices, crossingIndices.dropFirst()).map { Double($1 - $0) }
+        let meanInterval = intervals.reduce(0, +) / Double(intervals.count)
+        return sampleRate / meanInterval
     }
 
     private static func renderToArrays(
