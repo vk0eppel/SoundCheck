@@ -1,6 +1,6 @@
 # SoundCheck
 
-A signal generator utility for macOS, for sound engineers, techs, and hifi enthusiasts testing speakers and sound systems. Generates test signals only — SoundCheck is not an audio analyser and never captures or measures audio.
+A signal generator utility for macOS, to help sound engineers, audio technicians and audiophiles test sound recording and reproduction equipment. Generates test signals only — SoundCheck is not an audio analyser and never captures or measures audio.
 
 ## Status
 
