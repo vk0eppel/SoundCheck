@@ -7,7 +7,7 @@ Platform: macOS first, iOS portability considered but not designed for yet.
 ## Roadmap
 
 - **V1 (this doc):** Sine, pink noise, white noise + full UI chrome (on/off, frequency field, level field, device picker, per-channel mute/phase, sample rate/bit depth display).
-- **V2:** Band-limited pink noise (0-200Hz / 200Hz-1kHz / 1k-20kHz / 7k-20kHz / manual range), 1/3-octave pink noise (31 standard ISO 266 bands, filtered or directly generated), sine sweeps, square wave.
+- **V2:** Band-limited pink noise (0-200Hz / 200Hz-1kHz / 1k-20kHz / 7k-20kHz / manual range, **done** — see "V2 addendum: pink noise modes"), 1/3-octave pink noise (31 standard ISO 266 bands, **done** — same addendum), sine sweeps (in progress — see "V2 addendum: sine sweep"), square wave (not started — see "V2 addendum: square wave").
 
 ## V1 signal types
 
@@ -63,7 +63,7 @@ No separate help view, button, or menu item. Every control that has a keyboard s
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
 - Typed free-text values don't snap to the 1/3-octave grid; arrows are the only thing that snaps.
 - Clamp to range on commit, reject non-numeric input.
-- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch.
+- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is shared with Pink's 1/3-Octave band stepper (V2) and Sweep's duration field (V2) — see "V2 addendum: pink noise modes" and "V2 addendum: sine sweep".
 
 ### Level field
 - Range: -99 dBFS to 0 dBFS.
@@ -145,6 +145,16 @@ Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under o
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.
+
+## V2 addendum: pink noise modes
+
+Implemented via [issue #17](https://github.com/vk0eppel/SoundCheck/issues/17) and its child tickets on the V2 map, resolving that map's one open product question: band-limited and 1/3-octave noise are **sub-modes of the existing Pink signal type**, not new top-level signal-selector entries (5 fixed presets + 31 ISO bands as top-level segments would have overwhelmed the segmented signal-type selector).
+
+- **Mode selector:** a second segmented control — Full-range / Band-limited / 1/3-Octave — sits directly under the on/off switch, visible only when Pink is selected (reserved/hidden otherwise, same "always reserve, never remove" principle as the frequency field). Switching mode while Pink is running and playing applies live and does **not** force a full stop — only a signal-*type* switch does that (ADR 0003 is unchanged; mode is a parameter of Pink, not a different signal).
+- **Band-limited:** a preset picker (0–200Hz, 200Hz–1kHz, 1k–20kHz, 7k–20kHz, or Manual) sits directly under the mode selector. Manual reveals two numeric fields (low/high Hz, 20Hz–20kHz bounds, low < high enforced) using the same text-field style as Frequency/Level — but unlike those fields, manual-range edits only commit on Return or on losing focus (blur), not per keystroke, to avoid audibly hot-swapping a running filter's coefficients while typing. Each preset is realized as an optional highpass edge and/or optional lowpass edge (0–200Hz = lowpass-only; 200Hz–1kHz = highpass+lowpass; 1k–20kHz and 7k–20kHz = highpass-only), each edge a 4th-order (2-section) Butterworth `Biquad` cascade.
+- **1/3-Octave:** reuses the exact same reserved slot the Sine frequency field occupies (just above Level) — a band value with prev/next chevrons, stepped via the same `ThirdOctaveBands.step(from:direction:)` used for Sine, displaying via the same whole-Hz rule (31.5Hz keeps its decimal exception). Realized as a single fixed-Q (~4.32) bandpass `Biquad`.
+- **Persistence:** the selected mode, band-limited preset (including a manual range), and 1/3-octave band index all persist across relaunch, same global (not per-device) treatment as frequency/level.
+- **Architecture:** `PinkNoiseGenerator` reads `RenderParameters.pinkNoiseMode` and rebuilds its filter chain only when the mode actually changes (never per sample) — see `docs/research/band-limited-noise-generation.md` and `docs/research/one-third-octave-noise-generation.md` for why a single shared `Biquad` type is reused by both modes rather than a single "band-limiting" abstraction. `PinkNoiseMode` carries associated values (`.bandLimited(BandLimitedPreset)`, `.thirdOctave(bandIndex:)`), which meant it couldn't stay `CaseIterable`/segmented-picker-friendly on its own — `ContentView` tracks separate UI-facing state (`PinkNoiseModeFamily`, `BandLimitedPresetSelection`) and composes/decomposes the real `PinkNoiseMode` via computed properties.
 
 ## V2 addendum: sine sweep
 
