@@ -396,7 +396,20 @@ private struct WindowAccessor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async { configure(view) }
+        DispatchQueue.main.async {
+            // Without this, AppKit auto-focuses the first key-capable control (the
+            // frequency field) as soon as the window becomes key, which swallows the
+            // spacebar as a typed character instead of triggering the ON/OFF shortcut.
+            // initialFirstResponder only governs the *next* time the window becomes
+            // key (which may already have happened by now), so also force the
+            // current first responder away explicitly. Only runs here in makeNSView,
+            // not updateNSView, so it doesn't keep stealing focus from the user later.
+            if let window = view.window {
+                window.initialFirstResponder = window.contentView
+                window.makeFirstResponder(window.contentView)
+            }
+            configure(view)
+        }
         return view
     }
 
