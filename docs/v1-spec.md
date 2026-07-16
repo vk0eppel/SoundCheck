@@ -63,7 +63,7 @@ No separate help view, button, or menu item. Every control that has a keyboard s
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
 - Typed free-text values don't snap to the 1/3-octave grid; arrows are the only thing that snaps.
 - Clamp to range on commit, reject non-numeric input.
-- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is shared with Pink's 1/3-Octave band stepper (V2) and Sweep's duration field (V2) — see "V2 addendum: pink noise modes" and "V2 addendum: sine sweep".
+- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is a single shared control position, not three parallel reserved rows: Pink 1/3-Octave (V2) reuses this exact Frequency control (not a separate band stepper), Pink Band-limited (V2) shows a "Range" picker in the same slot instead, and Sweep (V2) shows a duration field there — see "V2 addendum: pink noise modes" and "V2 addendum: sine sweep".
 
 ### Level field
 - Range: -99 dBFS to 0 dBFS.
