@@ -4,6 +4,10 @@
 //
 //  Created by Victor Koeppel on 16/07/2026.
 //
+//
+//  Copyright (C) 2026 Victor Koeppel
+//  SPDX-License-Identifier: GPL-3.0-or-later
+//  Full license text: see LICENSE in the repository root.
 
 import Foundation
 import os

@@ -32,3 +32,7 @@ Or open `SoundCheck.xcodeproj` in Xcode and use Cmd-R / Cmd-U.
 - **V2:** band-limited pink noise, 1/3-octave pink noise (31 standard ISO 266 bands), sine sweeps, square wave.
 
 Out of scope: any audio analysis, metering, or capture.
+
+## License
+
+GPLv3 — see [`LICENSE`](LICENSE).
