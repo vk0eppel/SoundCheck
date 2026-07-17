@@ -176,6 +176,33 @@ struct SoundCheckTests {
         #expect(normal.contains { abs($0) > 0.01 })
     }
 
+    @Test func channelBufferIsLookedUpOncePerChannelNotOncePerFrame() async throws {
+        let core = SignalRenderCore()
+        core.updateParameters {
+            $0.generatorKind = .sine
+            $0.frequencyHz = 1000
+            $0.levelDbfs = 0
+            $0.running = true
+            $0.channelMuted = [false, false, false]
+            $0.channelPhaseReversed = [false, false, false]
+        }
+
+        let sampleRate = 48000.0
+        let frameCount = 512
+        let channelCount = 3
+        let buffers = (0..<channelCount).map { _ in UnsafeMutableBufferPointer<Float>.allocate(capacity: frameCount) }
+        defer { buffers.forEach { $0.deallocate() } }
+        buffers.forEach { $0.initialize(repeating: 0) }
+
+        var lookupCount = 0
+        core.render(frameCount: frameCount, channelCount: channelCount, sampleRate: sampleRate) { channel in
+            lookupCount += 1
+            return buffers[channel]
+        }
+
+        #expect(lookupCount == channelCount)
+    }
+
     @Test func levelControlsAmplitudeInDbfs() async throws {
         let sampleRate = 48000.0
         let frameCount = 4800

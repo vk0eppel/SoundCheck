@@ -144,6 +144,7 @@ Implemented as `SettingsStore`: a single JSON-encoded `SettingsSnapshot` under o
 | Mute/phase toggle contrast | Custom `SolidToggleStyle` (solid fill + white text when on) — the default `.toggleStyle(.button)` tint was too subtle for a safety-relevant control |
 | Pink noise loudness vs. Sine/White at the same Level | Kellett's raw output measured ~9.5dB quieter in RMS than White at the same `levelDbfs` (higher crest factor, uncompensated); `pinkLevelCompensationGain` now calibrates Pink's RMS to match White's — see `docs/research/pink-white-noise-generation.md`'s "Level compensation" addendum |
 | Device switch mute (post-V1 fix) | Now unconditionally forces every channel muted on every device switch, even a previously-used device with saved unmuted channels — matches ADR 0001's literal wording, which the original implementation didn't fully satisfy |
+| Render-loop per-channel work (post-V1 perf fix) | `SignalRenderCore.render` now precomputes each channel's buffer pointer and muted/phase-reversed flags once per callback, before the frame loop, instead of re-deriving them `frameCount` times per channel — same output, fewer redundant lookups per callback (see issue #11) |
 
 ## Out of scope for V1
 Band-limited noise, 1/3-octave noise, sweeps, square wave, any analysis/metering, any recording/capture.

@@ -377,6 +377,13 @@ final class SignalRenderCore: @unchecked Sendable {
     // land in the same parameter update.
     nonisolated(unsafe) private var activeGeneratorKind: GeneratorKind = .sine
 
+    // Reused across `render` calls (only reallocated when `channelCount` itself changes,
+    // e.g. a device switch) so hoisting the per-channel lookups out of the frame loop
+    // doesn't introduce a per-callback heap allocation on the real-time render thread.
+    nonisolated(unsafe) private var channelBufferScratch: [UnsafeMutableBufferPointer<Float>] = []
+    nonisolated(unsafe) private var channelMutedScratch: [Bool] = []
+    nonisolated(unsafe) private var channelPhaseReversedScratch: [Bool] = []
+
     var parameters: RenderParameters {
         parametersLock.withLock { $0 }
     }
@@ -394,6 +401,23 @@ final class SignalRenderCore: @unchecked Sendable {
         let currentParameters = parametersLock.withLock { $0 }
         let levelLinear = Self.linearGain(fromDbfs: currentParameters.levelDbfs)
         let rampStep = 1.0 / (Self.rampDurationSeconds * sampleRate)
+
+        // Precomputed once per channel per callback, not once per frame per channel — see
+        // #11. `channelBuffer` is only contractually required to return a buffer of at
+        // least `frameCount` samples for the channel, not to be called once per frame.
+        // Written into the reused scratch arrays in place (no per-callback allocation).
+        if channelBufferScratch.count != channelCount {
+            channelBufferScratch = Array(repeating: UnsafeMutableBufferPointer<Float>(start: nil, count: 0), count: channelCount)
+            channelMutedScratch = Array(repeating: false, count: channelCount)
+            channelPhaseReversedScratch = Array(repeating: false, count: channelCount)
+        }
+        for channel in 0..<channelCount {
+            channelBufferScratch[channel] = channelBuffer(channel)
+            channelMutedScratch[channel] = channel < currentParameters.channelMuted.count
+                ? currentParameters.channelMuted[channel] : true
+            channelPhaseReversedScratch[channel] = channel < currentParameters.channelPhaseReversed.count
+                && currentParameters.channelPhaseReversed[channel]
+        }
 
         for frame in 0..<frameCount {
             let targetGain: Double = currentParameters.running ? 1 : 0
@@ -413,10 +437,9 @@ final class SignalRenderCore: @unchecked Sendable {
                 * levelLinear * rampGain
 
             for channel in 0..<channelCount {
-                let muted = channel < currentParameters.channelMuted.count ? currentParameters.channelMuted[channel] : true
-                let phaseReversed = channel < currentParameters.channelPhaseReversed.count
-                    && currentParameters.channelPhaseReversed[channel]
-                channelBuffer(channel)[frame] = Float(muted ? 0 : (phaseReversed ? -sample : sample))
+                let muted = channelMutedScratch[channel]
+                let phaseReversed = channelPhaseReversedScratch[channel]
+                channelBufferScratch[channel][frame] = Float(muted ? 0 : (phaseReversed ? -sample : sample))
             }
         }
     }
