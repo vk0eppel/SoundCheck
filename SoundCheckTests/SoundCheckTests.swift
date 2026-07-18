@@ -852,6 +852,27 @@ struct SoundCheckTests {
         #expect(draft.manualLowHz == 950)
     }
 
+    /// Resolves the follow-on question the scenario above raises: once Low has committed
+    /// against the stale High, what happens when the user's still-pending High edit finally
+    /// commits? It clamps against the *now-current* Low (950, not the original 1000) — so a
+    /// typed 300 silently becomes 951, since 300 no longer clears `manualLowHz + 1`. This is
+    /// the expected consequence of commit-on-blur with two independently-committed fields,
+    /// not a data-loss bug: no crash, no corrupted persisted state, and the same clamp rule
+    /// that already governs every other commit. It is a real UX surprise worth documenting
+    /// here rather than fixing — swapping to a "commit both together" model would reintroduce
+    /// the per-keystroke filter-coefficient rebuild this design deliberately avoids (see
+    /// `NoiseModeDraft`'s own doc comment).
+    @Test func commitManualHighAfterAStaleLowClampCascadesIntoFurtherClamping() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualHighHz = 1000
+        _ = draft.commitManualLow(950) // clamps against stale High, as above
+
+        let committedHigh = draft.commitManualHigh(300) // the pending edit finally commits
+
+        #expect(committedHigh == 951) // manualLowHz(950) + 1, not the typed 300
+        #expect(draft.manualHighHz == 951)
+    }
+
     @Test func commitThirdOctaveBandClampsThenSnapsToNearestBand() async throws {
         var draft = NoiseModeDraft()
         let snapped = draft.commitThirdOctaveBand(fromTypedHz: 990)

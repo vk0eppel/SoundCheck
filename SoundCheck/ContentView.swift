@@ -292,15 +292,18 @@ struct ContentView: View {
     }
 
     /// What the shared frequency-like slot should render right now — Sine/Square's frequency
-    /// field, noise Band-limited's "Range" picker, noise 1/3-Octave's band field, or Sweep's
-    /// duration field. The one source of truth `frequencyOrRangeControl`'s dispatch reads
-    /// directly, instead of re-deriving the same noise-family/signal-type condition a second
-    /// time the way `frequencyOrRangeControlVisible` used to.
-    private enum FrequencySlotContent {
+    /// field, noise Band-limited's "Range" picker, noise 1/3-Octave's band field, Sweep's
+    /// duration field, or nothing (full-range noise, where frequency doesn't mean anything).
+    /// The one source of truth both `frequencyOrRangeControl`'s dispatch and
+    /// `frequencySlotVisible` read directly, instead of each re-deriving the same
+    /// noise-family/signal-type condition independently the way `frequencyOrRangeControl`'s
+    /// if/else chain and `frequencyOrRangeControlVisible` used to.
+    private enum FrequencySlotContent: Equatable {
         case frequency
         case range
         case thirdOctave
         case duration
+        case hidden
     }
 
     private var frequencySlotContent: FrequencySlotContent {
@@ -308,6 +311,8 @@ struct ContentView: View {
             .range
         } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .thirdOctave {
             .thirdOctave
+        } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .fullRange {
+            .hidden
         } else if signalSettings.signalType == .sweep {
             .duration
         } else {
@@ -315,19 +320,18 @@ struct ContentView: View {
         }
     }
 
-    /// Full-range noise doesn't use the frequency-like slot at all — frequency doesn't mean
-    /// anything to full-range Pink/White. Every other signal type/sub-mode does.
     private var frequencySlotVisible: Bool {
-        !(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .fullRange)
+        frequencySlotContent != .hidden
     }
 
     /// The one source of truth for whether the manual-range Low/High fields should show —
     /// read by both the opacity and disabled gates below, instead of writing the same
-    /// boolean expression out twice inline.
+    /// boolean expression out twice inline. Derives from `frequencySlotContent` rather than
+    /// re-testing the noise-family/Band-limited condition `frequencySlotContent` already
+    /// encodes, only adding the one further check (`.manual` selected) that's specific to
+    /// this row.
     private var manualRangeVisible: Bool {
-        isNoiseSignalType
-            && activeNoiseDraft.wrappedValue.family == .bandLimited
-            && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual
+        frequencySlotContent == .range && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual
     }
 
     var body: some View {
@@ -475,13 +479,16 @@ struct ContentView: View {
     /// `activeNoiseDraft`) — only one of the three is ever mounted at a time, in the exact
     /// same VStack position, rather than three parallel reserved rows. Switches on
     /// `frequencySlotContent` directly rather than re-deriving the dispatch condition here.
+    /// `.hidden` (full-range noise) still mounts `frequencyControl` — same as `.frequency` —
+    /// since `frequencySlotVisible` is what hides it; the reserved-space/no-reflow guarantee
+    /// depends on some view always being mounted here, not on which one.
     @ViewBuilder
     private var frequencyOrRangeControl: some View {
         switch frequencySlotContent {
         case .range: rangeControl
         case .thirdOctave: thirdOctaveFrequencyControl
         case .duration: durationControl
-        case .frequency: frequencyControl
+        case .frequency, .hidden: frequencyControl
         }
     }
 
