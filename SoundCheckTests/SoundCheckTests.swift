@@ -439,7 +439,7 @@ struct SoundCheckTests {
 
         func gain(_ preset: BandLimitedPreset, probeHz: Double) -> Double {
             Self.steadyStateGain(
-                BandLimitedFilterChain(preset: preset, sampleRate: sampleRate),
+                BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: .pinkOneOverF),
                 probeFrequencyHz: probeHz, sampleRate: sampleRate
             )
         }
@@ -534,7 +534,7 @@ struct SoundCheckTests {
         let frameCount = 96000
         let levelDbfs = -12.0
 
-        func rms(mode: PinkNoiseMode) -> Double {
+        func rms(mode: NoiseMode) -> Double {
             let core = SignalRenderCore()
             core.updateParameters {
                 $0.generatorKind = .pink
@@ -551,7 +551,7 @@ struct SoundCheckTests {
         }
 
         let fullRangeRMS = rms(mode: .fullRange)
-        func dbRatio(_ mode: PinkNoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
+        func dbRatio(_ mode: NoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
 
         let presets: [BandLimitedPreset] = [
             .preset0to200Hz, .preset200HzTo1kHz, .preset1kTo20kHz, .preset7kTo20kHz,
@@ -563,6 +563,101 @@ struct SoundCheckTests {
 
         for bandIndex in [5, 17, 25] {
             #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 3)
+        }
+    }
+
+    /// White's PSD is flat (equal energy per Hz), not 1/f like Pink's -- reusing Pink's
+    /// octave-span compensation formula would be audibly wrong. Verifies the linear-Hz-based
+    /// formulas in `BandLimitedFilterChain`'s `.whiteFlat` shape and
+    /// `whiteThirdOctaveLevelCompensationGain` keep measured RMS close to full-range White's
+    /// at a fixed Level -- the practical validation of that derivation. See
+    /// docs/research/white-noise-band-limiting.md.
+    @Test func filteredWhiteModesMatchFullRangeRMSAtTheSameLevel() async throws {
+        let sampleRate = 48000.0
+        let frameCount = 96000
+        let levelDbfs = -12.0
+
+        func rms(mode: NoiseMode) -> Double {
+            let core = SignalRenderCore()
+            core.updateParameters {
+                $0.generatorKind = .white
+                $0.levelDbfs = levelDbfs
+                $0.running = true
+                $0.whiteNoiseMode = mode
+                $0.channelMuted = [false]
+                $0.channelPhaseReversed = [false]
+            }
+            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+            let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
+            let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
+            return meanSquare.squareRoot()
+        }
+
+        let fullRangeRMS = rms(mode: .fullRange)
+        func dbRatio(_ mode: NoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
+
+        let presets: [BandLimitedPreset] = [
+            .preset0to200Hz, .preset200HzTo1kHz, .preset1kTo20kHz, .preset7kTo20kHz,
+            .manual(lowHz: 2000, highHz: 4000),
+        ]
+        for preset in presets {
+            #expect(abs(dbRatio(.bandLimited(preset))) < 3)
+        }
+
+        for bandIndex in [5, 17, 25] {
+            #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 3)
+        }
+    }
+
+    /// `PinkNoiseGenerator` holds its own internal `WhiteNoiseGenerator` to drive its Kellett
+    /// filter cascade with raw white noise. Regression guard for the bug that split would
+    /// otherwise introduce: Pink's output must stay identical regardless of
+    /// `RenderParameters.whiteNoiseMode`'s value, since that parameter only means something
+    /// while White is the *active* generator.
+    @Test func pinkToneIsUnaffectedByWhiteNoiseMode() async throws {
+        let sampleRate = 48000.0
+        let frameCount = 9600
+        let levelDbfs = -12.0
+
+        func pinkSamples(whiteNoiseMode: NoiseMode) -> [Float] {
+            let core = SignalRenderCore()
+            core.updateParameters {
+                $0.generatorKind = .pink
+                $0.levelDbfs = levelDbfs
+                $0.running = true
+                $0.whiteNoiseMode = whiteNoiseMode
+                $0.channelMuted = [false]
+                $0.channelPhaseReversed = [false]
+            }
+            return Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)[0]
+        }
+
+        let withFullRangeWhite = pinkSamples(whiteNoiseMode: .fullRange)
+        let withBandLimitedWhite = pinkSamples(whiteNoiseMode: .bandLimited(.preset7kTo20kHz))
+        let withThirdOctaveWhite = pinkSamples(whiteNoiseMode: .thirdOctave(bandIndex: 5))
+
+        // Both `PinkNoiseGenerator` instances above are freshly constructed with the same
+        // fixed seed (see `PinkNoiseGenerator.init`'s default), so their internal white
+        // source produces an identical raw sample sequence -- Pink's output should be
+        // byte-for-byte identical regardless of `whiteNoiseMode`.
+        #expect(withFullRangeWhite == withBandLimitedWhite)
+        #expect(withFullRangeWhite == withThirdOctaveWhite)
+    }
+
+    @Test func noiseModeDraftRoundTripsEveryMode() async throws {
+        let modes: [NoiseMode] = [
+            .fullRange,
+            .bandLimited(.preset0to200Hz),
+            .bandLimited(.preset200HzTo1kHz),
+            .bandLimited(.preset1kTo20kHz),
+            .bandLimited(.preset7kTo20kHz),
+            .bandLimited(.manual(lowHz: 250, highHz: 3500)),
+            .thirdOctave(bandIndex: 17),
+        ]
+
+        for mode in modes {
+            let draft = NoiseModeDraft(resolving: mode)
+            #expect(draft.resolved == mode)
         }
     }
 
@@ -579,6 +674,24 @@ struct SoundCheckTests {
         let thirdOctaveStore = SettingsStore(defaults: defaults)
         thirdOctaveStore.update { $0.pinkNoiseMode = .thirdOctave(bandIndex: 17) }
         #expect(SettingsStore(defaults: defaults).snapshot.pinkNoiseMode == .thirdOctave(bandIndex: 17))
+    }
+
+    @MainActor
+    @Test func whiteNoiseModeAssociatedValuesSurviveARelaunch() async throws {
+        let suiteName = "SettingsStoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manualStore = SettingsStore(defaults: defaults)
+        manualStore.update { $0.whiteNoiseMode = .bandLimited(.manual(lowHz: 250, highHz: 3500)) }
+        #expect(SettingsStore(defaults: defaults).snapshot.whiteNoiseMode == .bandLimited(.manual(lowHz: 250, highHz: 3500)))
+
+        let thirdOctaveStore = SettingsStore(defaults: defaults)
+        thirdOctaveStore.update { $0.whiteNoiseMode = .thirdOctave(bandIndex: 17) }
+        #expect(SettingsStore(defaults: defaults).snapshot.whiteNoiseMode == .thirdOctave(bandIndex: 17))
+
+        // Pink's and White's mode selections persist independently, not sharing one field.
+        #expect(SettingsStore(defaults: defaults).snapshot.pinkNoiseMode == .fullRange)
     }
 
     @Test func biquadLowpassPassesBelowAndAttenuatesAboveCutoff() async throws {

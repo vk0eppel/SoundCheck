@@ -34,27 +34,62 @@ enum SignalType: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// Which of Pink's three sub-modes is active — the UI-facing counterpart to
-/// `PinkNoiseMode`, which can't itself be `CaseIterable`/segmented-picker-friendly once
-/// `.bandLimited`/`.thirdOctave` carry associated data.
-private enum PinkNoiseModeFamily: String, CaseIterable, Identifiable {
-    case fullRange = "FULL-RANGE"
-    case bandLimited = "BAND-LIMITED"
-    case thirdOctave = "1/3-OCTAVE"
+/// Bridges `NoiseMode`'s associated-value cases to something SwiftUI's segmented/menu
+/// pickers can drive, and back — one instance per noise color (Pink and White each hold
+/// their own in `ContentView`, so each color's sub-mode selection persists independently;
+/// see docs/v1-spec.md's V2 addendum). Owns the *committed* sub-selection only; transient
+/// per-keystroke draft text for the manual-range/1/3-octave fields stays outside, as
+/// `ContentView`-only `@State`, since it's UI-input-lifecycle state (avoiding an audible
+/// mid-keystroke filter-coefficient hot-swap — see docs/research/band-limited-noise-generation.md's
+/// "Cost" section), not domain state that belongs on this type.
+struct NoiseModeDraft {
+    var family: NoiseMode.Family = .fullRange
+    var bandLimitedSelection: BandLimitedPreset.Selection = .preset0to200Hz
+    var manualLowHz: Double = 200
+    var manualHighHz: Double = 1000
+    var thirdOctaveBandIndex: Int = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000) ?? 0
 
-    var id: String { rawValue }
-}
+    init() {}
 
-/// The UI-facing counterpart to `BandLimitedPreset`, for the same reason as
-/// `PinkNoiseModeFamily` — `.manual` carries the actual low/high values separately.
-private enum BandLimitedPresetSelection: String, CaseIterable, Identifiable {
-    case preset0to200Hz = "0–200Hz"
-    case preset200HzTo1kHz = "200Hz–1kHz"
-    case preset1kTo20kHz = "1kHz–20kHz"
-    case preset7kTo20kHz = "7kHz–20kHz"
-    case manual = "MANUAL"
+    /// Decomposes a loaded/live `NoiseMode` into this draft's separate family/preset/band
+    /// fields — the inverse of `resolved` below.
+    init(resolving mode: NoiseMode) {
+        switch mode {
+        case .fullRange:
+            family = .fullRange
+        case .bandLimited(let preset):
+            family = .bandLimited
+            bandLimitedSelection = preset.selection
+            if case .manual(let lowHz, let highHz) = preset {
+                manualLowHz = lowHz
+                manualHighHz = highHz
+            }
+        case .thirdOctave(let bandIndex):
+            family = .thirdOctave
+            thirdOctaveBandIndex = bandIndex
+        }
+    }
 
-    var id: String { rawValue }
+    /// The `RenderParameters`/`SettingsStore`-facing value assembled from this draft's
+    /// family + preset/band selection, so the rest of the app only ever deals in the one
+    /// real `NoiseMode`.
+    var resolved: NoiseMode {
+        switch family {
+        case .fullRange: .fullRange
+        case .bandLimited: .bandLimited(bandLimitedPreset)
+        case .thirdOctave: .thirdOctave(bandIndex: thirdOctaveBandIndex)
+        }
+    }
+
+    private var bandLimitedPreset: BandLimitedPreset {
+        switch bandLimitedSelection {
+        case .preset0to200Hz: .preset0to200Hz
+        case .preset200HzTo1kHz: .preset200HzTo1kHz
+        case .preset1kTo20kHz: .preset1kTo20kHz
+        case .preset7kTo20kHz: .preset7kTo20kHz
+        case .manual: .manual(lowHz: manualLowHz, highHz: manualHighHz)
+        }
+    }
 }
 
 /// Identifies which manual-range field currently has focus, so losing focus (blur) can be
@@ -142,25 +177,27 @@ struct ContentView: View {
     @State private var alwaysOnTop = false
     @State private var frequencyHz: Double = 1000
     @State private var levelDbfs: Double = -20
-    @State private var pinkNoiseModeFamily: PinkNoiseModeFamily = .fullRange
-    @State private var bandLimitedPresetSelection: BandLimitedPresetSelection = .preset0to200Hz
-    // Committed values -- these, not the drafts below, feed `bandLimitedPreset`/
-    // `pinkNoiseMode` and so the render core. Kept separate from the text fields' live
-    // typing so a filter-coefficient rebuild only happens on commit (blur/Return), not per
-    // keystroke -- per docs/research/band-limited-noise-generation.md's Cost section,
-    // hot-swapping a running filter's coefficients on every intermediate drag/keystroke
-    // frame risks an audible discontinuity.
-    @State private var manualLowHz: Double = 200
-    @State private var manualHighHz: Double = 1000
+    // Committed sub-mode selection, one instance per noise color so Pink's and White's
+    // selections persist independently (see `NoiseModeDraft`'s doc comment). Which one is
+    // "active" is derived from `signalType` via `activeNoiseDraft` below.
+    @State private var pinkDraft = NoiseModeDraft()
+    @State private var whiteDraft = NoiseModeDraft()
+    // Transient per-keystroke draft text, shared (not duplicated per color) since only one
+    // color's manual-range/1/3-octave field is ever visible at a time and these are
+    // re-seeded from the active draft's committed values on appear/signal-type switch, not
+    // persisted across a switch. Kept separate from the committed values above so a
+    // filter-coefficient rebuild only happens on commit (blur/Return), not per keystroke --
+    // per docs/research/band-limited-noise-generation.md's Cost section, hot-swapping a
+    // running filter's coefficients on every intermediate drag/keystroke frame risks an
+    // audible discontinuity.
     @State private var manualLowHzDraft: Double = 200
     @State private var manualHighHzDraft: Double = 1000
     @FocusState private var manualRangeFieldFocus: ManualRangeField?
-    @State private var thirdOctaveBandIndex: Int = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000) ?? 0
-    // Draft for the shared Frequency field's TextField when it's driving 1/3-octave Pink
+    // Draft for the shared Frequency field's TextField when it's driving 1/3-octave noise
     // rather than Sine -- kept separate from `frequencyHz` (Sine's own persisted value) so
     // typing a band value here can't clobber Sine's saved frequency, and committed
     // (blur/Return) rather than live for the same filter-coefficient-hot-swap reason as
-    // `manualLowHz`/`manualHighHz` above.
+    // `manualLowHzDraft`/`manualHighHzDraft` above.
     @State private var thirdOctaveHzDraft: Double = 1000
     @FocusState private var thirdOctaveFieldFocused: Bool
     @State private var sweepDurationSeconds: Double = 10
@@ -174,6 +211,24 @@ struct ContentView: View {
     @State private var selectedDeviceUID: String?
     @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
+
+    /// Pink and White are the two "noise-family" signal types -- both carry a `NoiseMode`
+    /// sub-selection and share the mode-picker/range/manual-field views.
+    private var isNoiseSignalType: Bool {
+        signalType == .pink || signalType == .white
+    }
+
+    /// Whichever of `pinkDraft`/`whiteDraft` corresponds to the current `signalType` --
+    /// both noise-family signal types share the mode-picker/range/manual-field views by
+    /// binding to this, rather than duplicating those views per color.
+    private var activeNoiseDraft: Binding<NoiseModeDraft> {
+        Binding(
+            get: { signalType == .white ? whiteDraft : pinkDraft },
+            set: { newValue in
+                if signalType == .white { whiteDraft = newValue } else { pinkDraft = newValue }
+            }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -194,19 +249,29 @@ struct ContentView: View {
                             $0.running = false
                         }
                         settingsStore.update { $0.signalType = newValue }
+
+                        // Resync the transient draft text to whichever color is now active --
+                        // `thirdOctaveFrequencyControl`'s own `onAppear` resync (below) covers
+                        // the case where it's newly mounted, but SwiftUI may preserve an
+                        // already-mounted instance's identity across this switch, so resync
+                        // explicitly here too rather than relying on that alone.
+                        manualLowHzDraft = activeNoiseDraft.wrappedValue.manualLowHz
+                        manualHighHzDraft = activeNoiseDraft.wrappedValue.manualHighHz
+                        thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
                     }
 
                     onOffButton
 
                     // Reserved even when not applicable (not conditionally removed) so the
-                    // fixed-size window doesn't reflow when switching signal type or Pink
-                    // sub-mode. Pink's mode selector sits right under on/off.
-                    pinkNoiseModeControl
-                        .opacity(signalType == .pink ? 1 : 0)
-                        .disabled(signalType != .pink)
+                    // fixed-size window doesn't reflow when switching signal type or noise
+                    // sub-mode. The mode selector sits right under on/off, shared by Pink and
+                    // White (both "noise-family" signal types).
+                    noiseModeControl
+                        .opacity(isNoiseSignalType ? 1 : 0)
+                        .disabled(!isNoiseSignalType)
 
                     // One shared slot, not three parallel reserved rows: Sine's frequency
-                    // field, Pink 1/3-Octave's band field, and Pink Band-limited's "Range"
+                    // field, noise 1/3-Octave's band field, and noise Band-limited's "Range"
                     // picker all render in the exact same spot (via `frequencyOrRangeControl`
                     // switching content), so "the frequency-like control" is literally the
                     // same control, not three near-duplicates stacked invisibly on top of
@@ -219,8 +284,8 @@ struct ContentView: View {
                     // below, since they need to appear alongside the Range picker above (not
                     // instead of it) when Manual is selected.
                     manualRangeFields
-                        .opacity(signalType == .pink && pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual ? 1 : 0)
-                        .disabled(!(signalType == .pink && pinkNoiseModeFamily == .bandLimited && bandLimitedPresetSelection == .manual))
+                        .opacity(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual ? 1 : 0)
+                        .disabled(!(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual))
 
                     levelControl
                 }
@@ -252,13 +317,18 @@ struct ContentView: View {
             signalType = snapshot.signalType
             frequencyHz = snapshot.frequencyHz
             levelDbfs = snapshot.levelDbfs
-            applyLoadedPinkNoiseMode(snapshot.pinkNoiseMode)
+            pinkDraft = NoiseModeDraft(resolving: snapshot.pinkNoiseMode)
+            whiteDraft = NoiseModeDraft(resolving: snapshot.whiteNoiseMode)
+            manualLowHzDraft = activeNoiseDraft.wrappedValue.manualLowHz
+            manualHighHzDraft = activeNoiseDraft.wrappedValue.manualHighHz
+            thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
             sweepDurationSeconds = snapshot.sweepDurationSeconds
             engineController.renderCore.updateParameters {
                 $0.generatorKind = snapshot.signalType.generatorKind
                 $0.frequencyHz = snapshot.frequencyHz
                 $0.levelDbfs = snapshot.levelDbfs
                 $0.pinkNoiseMode = snapshot.pinkNoiseMode
+                $0.whiteNoiseMode = snapshot.whiteNoiseMode
                 $0.sweepDurationSeconds = snapshot.sweepDurationSeconds
             }
 
@@ -282,11 +352,15 @@ struct ContentView: View {
             engineController.renderCore.updateParameters { $0.levelDbfs = newValue }
             settingsStore.update { $0.levelDbfs = newValue }
         }
-        .onChange(of: pinkNoiseMode) { _, newValue in
+        .onChange(of: pinkDraft.resolved) { _, newValue in
             // Applies live, same as frequency/level — only a signal-*type* switch
-            // forces a full stop (ADR 0003), not a change within Pink's sub-modes.
+            // forces a full stop (ADR 0003), not a change within a noise color's sub-modes.
             engineController.renderCore.updateParameters { $0.pinkNoiseMode = newValue }
             settingsStore.update { $0.pinkNoiseMode = newValue }
+        }
+        .onChange(of: whiteDraft.resolved) { _, newValue in
+            engineController.renderCore.updateParameters { $0.whiteNoiseMode = newValue }
+            settingsStore.update { $0.whiteNoiseMode = newValue }
         }
         .onChange(of: sweepDurationSeconds) { _, newValue in
             engineController.renderCore.updateParameters { $0.sweepDurationSeconds = newValue }
@@ -343,14 +417,15 @@ struct ContentView: View {
         .help("Start or stop the signal (Space)")
     }
 
-    /// The one shared slot for Sine's frequency field, Pink 1/3-Octave's band field, and
-    /// Pink Band-limited's "Range" picker — only one of the three is ever mounted at a time,
-    /// in the exact same VStack position, rather than three parallel reserved rows.
+    /// The one shared slot for Sine's frequency field, noise Band-limited's "Range" picker,
+    /// and noise 1/3-Octave's band field (shared by Pink and White alike, via
+    /// `activeNoiseDraft`) — only one of the three is ever mounted at a time, in the exact
+    /// same VStack position, rather than three parallel reserved rows.
     @ViewBuilder
     private var frequencyOrRangeControl: some View {
-        if signalType == .pink && pinkNoiseModeFamily == .bandLimited {
+        if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited {
             rangeControl
-        } else if signalType == .pink && pinkNoiseModeFamily == .thirdOctave {
+        } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .thirdOctave {
             thirdOctaveFrequencyControl
         } else if signalType == .sweep {
             durationControl
@@ -362,8 +437,8 @@ struct ContentView: View {
     private var frequencyOrRangeControlVisible: Bool {
         switch signalType {
         case .sine: true
-        case .pink: pinkNoiseModeFamily == .bandLimited || pinkNoiseModeFamily == .thirdOctave
-        case .white: false
+        case .pink, .white:
+            activeNoiseDraft.wrappedValue.family == .bandLimited || activeNoiseDraft.wrappedValue.family == .thirdOctave
         case .sweep: true
         case .square: true
         }
@@ -458,41 +533,22 @@ struct ContentView: View {
         .onChange(of: thirdOctaveFieldFocused) { wasFocused, isFocused in
             if wasFocused && !isFocused { commitThirdOctaveDraft() }
         }
-        .onChange(of: thirdOctaveBandIndex) { _, newValue in
+        .onChange(of: activeNoiseDraft.wrappedValue.thirdOctaveBandIndex) { _, newValue in
             thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[newValue]
         }
         // `onChange` alone misses the case where `thirdOctaveBandIndex` was set (e.g. by
-        // `applyLoadedPinkNoiseMode` on launch) while this branch of `frequencyOrRangeControl`
+        // `NoiseModeDraft(resolving:)` on launch) while this branch of `frequencyOrRangeControl`
         // wasn't mounted yet — resync whenever this view (re)appears.
         .onAppear {
-            thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
+            thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
         }
     }
 
-    /// The `RenderParameters`/`SettingsStore`-facing value, assembled from the UI-facing
-    /// family + preset/band selection state so the rest of the app (parameter push,
-    /// persistence) only ever deals in the one real `PinkNoiseMode`.
-    private var pinkNoiseMode: PinkNoiseMode {
-        switch pinkNoiseModeFamily {
-        case .fullRange: .fullRange
-        case .bandLimited: .bandLimited(bandLimitedPreset)
-        case .thirdOctave: .thirdOctave(bandIndex: thirdOctaveBandIndex)
-        }
-    }
-
-    private var bandLimitedPreset: BandLimitedPreset {
-        switch bandLimitedPresetSelection {
-        case .preset0to200Hz: .preset0to200Hz
-        case .preset200HzTo1kHz: .preset200HzTo1kHz
-        case .preset1kTo20kHz: .preset1kTo20kHz
-        case .preset7kTo20kHz: .preset7kTo20kHz
-        case .manual: .manual(lowHz: manualLowHz, highHz: manualHighHz)
-        }
-    }
-
-    private var pinkNoiseModeControl: some View {
-        Picker("", selection: $pinkNoiseModeFamily) {
-            ForEach(PinkNoiseModeFamily.allCases) { family in
+    /// Shared by Pink and White (both "noise-family" signal types) via `activeNoiseDraft` —
+    /// visible only when `isNoiseSignalType`.
+    private var noiseModeControl: some View {
+        Picker("", selection: activeNoiseDraft.family) {
+            ForEach(NoiseMode.Family.allCases) { family in
                 Text(family.rawValue).tag(family)
             }
         }
@@ -500,15 +556,15 @@ struct ContentView: View {
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
-    /// the "frequency-like control" for Pink's Band-limited sub-mode. Manual's low/high
-    /// fields live in their own separate reserved slot (`manualRangeFields`), since they
-    /// need to appear alongside this picker, not instead of it.
+    /// the "frequency-like control" for a noise color's Band-limited sub-mode. Manual's
+    /// low/high fields live in their own separate reserved slot (`manualRangeFields`), since
+    /// they need to appear alongside this picker, not instead of it.
     private var rangeControl: some View {
         HStack {
             Text("Range")
 
-            Picker("", selection: $bandLimitedPresetSelection) {
-                ForEach(BandLimitedPresetSelection.allCases) { preset in
+            Picker("", selection: activeNoiseDraft.bandLimitedSelection) {
+                ForEach(BandLimitedPreset.Selection.allCases) { preset in
                     Text(preset.rawValue).tag(preset)
                 }
             }
@@ -696,19 +752,22 @@ struct ContentView: View {
     }
 
     private func commitManualLowHz() {
-        manualLowHz = min(max(manualLowHzDraft, 20), manualHighHz - 1)
-        manualLowHzDraft = manualLowHz
+        let newLow = min(max(manualLowHzDraft, 20), activeNoiseDraft.wrappedValue.manualHighHz - 1)
+        activeNoiseDraft.wrappedValue.manualLowHz = newLow
+        manualLowHzDraft = newLow
     }
 
     private func commitManualHighHz() {
-        manualHighHz = max(min(manualHighHzDraft, 20000), manualLowHz + 1)
-        manualHighHzDraft = manualHighHz
+        let newHigh = max(min(manualHighHzDraft, 20000), activeNoiseDraft.wrappedValue.manualLowHz + 1)
+        activeNoiseDraft.wrappedValue.manualHighHz = newHigh
+        manualHighHzDraft = newHigh
     }
 
     private func stepThirdOctaveBand(_ direction: Int) {
-        let currentHz = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
+        let currentHz = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
         let newHz = ThirdOctaveBands.step(from: currentHz, direction: direction)
-        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? thirdOctaveBandIndex
+        activeNoiseDraft.wrappedValue.thirdOctaveBandIndex =
+            ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? activeNoiseDraft.wrappedValue.thirdOctaveBandIndex
     }
 
     /// Clamps and snaps a typed `thirdOctaveHzDraft` value to the nearest ISO 266 band on
@@ -717,35 +776,9 @@ struct ContentView: View {
     private func commitThirdOctaveDraft() {
         let clamped = min(max(thirdOctaveHzDraft, 20), 20000)
         let snapped = ThirdOctaveBands.step(from: clamped, direction: 0)
-        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: snapped) ?? thirdOctaveBandIndex
+        activeNoiseDraft.wrappedValue.thirdOctaveBandIndex =
+            ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: snapped) ?? activeNoiseDraft.wrappedValue.thirdOctaveBandIndex
         thirdOctaveHzDraft = snapped
-    }
-
-    /// Decomposes a loaded `PinkNoiseMode` back into the separate UI-facing family/preset/
-    /// band state — the inverse of the `pinkNoiseMode`/`bandLimitedPreset` computed
-    /// properties above.
-    private func applyLoadedPinkNoiseMode(_ mode: PinkNoiseMode) {
-        switch mode {
-        case .fullRange:
-            pinkNoiseModeFamily = .fullRange
-        case .bandLimited(let preset):
-            pinkNoiseModeFamily = .bandLimited
-            switch preset {
-            case .preset0to200Hz: bandLimitedPresetSelection = .preset0to200Hz
-            case .preset200HzTo1kHz: bandLimitedPresetSelection = .preset200HzTo1kHz
-            case .preset1kTo20kHz: bandLimitedPresetSelection = .preset1kTo20kHz
-            case .preset7kTo20kHz: bandLimitedPresetSelection = .preset7kTo20kHz
-            case .manual(let lowHz, let highHz):
-                bandLimitedPresetSelection = .manual
-                manualLowHz = lowHz
-                manualHighHz = highHz
-                manualLowHzDraft = lowHz
-                manualHighHzDraft = highHz
-            }
-        case .thirdOctave(let bandIndex):
-            pinkNoiseModeFamily = .thirdOctave
-            thirdOctaveBandIndex = bandIndex
-        }
     }
 
     private func adjustLevel(_ direction: Int) {

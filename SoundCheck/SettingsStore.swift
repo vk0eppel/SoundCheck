@@ -26,7 +26,8 @@ struct SettingsSnapshot: Codable, Equatable {
     var levelDbfs: Double = -20
     var selectedDeviceUID: String?
     var channelStatesByDeviceUID: [String: [PersistedChannelState]] = [:]
-    var pinkNoiseMode: PinkNoiseMode = .fullRange
+    var pinkNoiseMode: NoiseMode = .fullRange
+    var whiteNoiseMode: NoiseMode = .fullRange
     var sweepDurationSeconds: Double = 10
 }
 

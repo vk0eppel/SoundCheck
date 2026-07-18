@@ -120,19 +120,65 @@ final class SweepGenerator: SignalGenerator {
 
 /// xorshift64* — fast, non-cryptographic, real-time-safe. Not SystemRandomNumberGenerator,
 /// which draws from OS entropy per call and isn't real-time-safe. See docs/research/pink-white-noise-generation.md.
+/// Carries the same three sub-modes Pink noise does (see docs/research/white-noise-band-limiting.md
+/// for why White's level-compensation math has to differ from Pink's), rebuilt only when the
+/// mode actually changes, mirroring `PinkNoiseGenerator`'s shape.
 final class WhiteNoiseGenerator: SignalGenerator {
     private var state: UInt64
+
+    private var currentMode: NoiseMode = .fullRange
+    private var bandLimitedFilter: BandLimitedFilterChain?
+    private var thirdOctaveFilter: ThirdOctaveFilterChain?
+    // Computed once when `.thirdOctave` is (re)adopted, not per sample -- unlike Pink's
+    // fixed `thirdOctaveLevelCompensationGain` constant, White's is a function of centerHz,
+    // so it can't be a simple `let` and must be cached here instead.
+    private var thirdOctaveCompensationGain: Double = 1
 
     init(seed: UInt64 = 0x2545_F491_4F6C_DD1D) {
         state = seed
     }
 
-    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+    /// The pure PRNG draw, with no mode dispatch — used directly by `PinkNoiseGenerator`'s
+    /// internal white-noise source, which must stay unaffected by
+    /// `RenderParameters.whiteNoiseMode` regardless of its value (Pink and White are
+    /// independent signal types; a setting that only means something while White is the
+    /// active generator must not silently reshape Pink's tone too).
+    fileprivate func rawSample() -> Double {
         state ^= state << 13
         state ^= state >> 7
         state ^= state << 17
         let unitInterval = Double(state >> 11) * (1.0 / Double(1 << 53))
         return unitInterval * 2 - 1
+    }
+
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        if parameters.whiteNoiseMode != currentMode {
+            currentMode = parameters.whiteNoiseMode
+            switch currentMode {
+            case .fullRange:
+                bandLimitedFilter = nil
+                thirdOctaveFilter = nil
+            case .bandLimited(let preset):
+                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: .whiteFlat)
+                thirdOctaveFilter = nil
+            case .thirdOctave(let bandIndex):
+                let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
+                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
+                thirdOctaveCompensationGain = whiteThirdOctaveLevelCompensationGain(centerHz: centerHz)
+                bandLimitedFilter = nil
+            }
+        }
+
+        let whiteSample = rawSample()
+
+        switch currentMode {
+        case .fullRange:
+            return whiteSample
+        case .bandLimited:
+            return bandLimitedFilter?.process(whiteSample) ?? whiteSample
+        case .thirdOctave:
+            return (thirdOctaveFilter?.process(whiteSample) ?? whiteSample) * thirdOctaveCompensationGain
+        }
     }
 }
 
@@ -152,7 +198,7 @@ final class PinkNoiseGenerator: SignalGenerator {
     // Rebuilt only when `pinkNoiseMode` actually changes (never per sample) — see
     // docs/research/band-limited-noise-generation.md and
     // docs/research/one-third-octave-noise-generation.md.
-    private var currentMode: PinkNoiseMode = .fullRange
+    private var currentMode: NoiseMode = .fullRange
     private var bandLimitedFilter: BandLimitedFilterChain?
     private var thirdOctaveFilter: ThirdOctaveFilterChain?
 
@@ -168,7 +214,7 @@ final class PinkNoiseGenerator: SignalGenerator {
                 bandLimitedFilter = nil
                 thirdOctaveFilter = nil
             case .bandLimited(let preset):
-                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate)
+                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: .pinkOneOverF)
                 thirdOctaveFilter = nil
             case .thirdOctave(let bandIndex):
                 let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
@@ -177,7 +223,9 @@ final class PinkNoiseGenerator: SignalGenerator {
             }
         }
 
-        let whiteSample = white.nextSample(parameters: parameters, sampleRate: sampleRate)
+        // Raw draw only, no mode dispatch -- Pink's internal white-noise source must stay
+        // unaffected by `RenderParameters.whiteNoiseMode` (see `WhiteNoiseGenerator.rawSample`).
+        let whiteSample = white.rawSample()
         b0 = 0.99886 * b0 + whiteSample * 0.0555179
         b1 = 0.99332 * b1 + whiteSample * 0.0750759
         b2 = 0.96900 * b2 + whiteSample * 0.1538520
@@ -208,12 +256,36 @@ enum GeneratorKind: Equatable, Sendable {
     case square
 }
 
-/// A sub-mode of the Pink generator, not a `GeneratorKind` of its own — band-limited and
-/// 1/3-octave noise are both still "Pink," just spectrally shaped.
-enum PinkNoiseMode: Equatable, Sendable, Codable {
+/// A sub-mode shared by both noise-color generators (Pink and White), not a `GeneratorKind`
+/// of its own — band-limited and 1/3-octave noise are still "Pink" or "White," just
+/// spectrally shaped. `RenderParameters`/`SettingsSnapshot` carry one field per color
+/// (`pinkNoiseMode`, `whiteNoiseMode`) so each color's selection persists independently.
+enum NoiseMode: Equatable, Sendable, Codable {
     case fullRange
     case bandLimited(BandLimitedPreset)
     case thirdOctave(bandIndex: Int)
+}
+
+extension NoiseMode {
+    /// The UI-facing, picker-friendly projection of `NoiseMode` — `.bandLimited`/
+    /// `.thirdOctave` carry associated data, so `NoiseMode` itself can't be
+    /// `CaseIterable`/segmented-picker-friendly. `ContentView`'s `NoiseModeDraft` bridges
+    /// between this and the real `NoiseMode`.
+    enum Family: String, CaseIterable, Identifiable {
+        case fullRange = "FULL-RANGE"
+        case bandLimited = "BAND-LIMITED"
+        case thirdOctave = "1/3-OCTAVE"
+
+        var id: String { rawValue }
+    }
+
+    var family: Family {
+        switch self {
+        case .fullRange: .fullRange
+        case .bandLimited: .bandLimited
+        case .thirdOctave: .thirdOctave
+        }
+    }
 }
 
 /// The 5 band-limited presets (#22), each an optional highpass edge and/or optional
@@ -237,18 +309,53 @@ enum BandLimitedPreset: Equatable, Sendable, Codable {
     }
 }
 
+extension BandLimitedPreset {
+    /// The UI-facing, picker-friendly projection of `BandLimitedPreset` — `.manual` carries
+    /// its own low/high values separately, for the same reason `NoiseMode.Family` exists.
+    enum Selection: String, CaseIterable, Identifiable {
+        case preset0to200Hz = "0–200Hz"
+        case preset200HzTo1kHz = "200Hz–1kHz"
+        case preset1kTo20kHz = "1kHz–20kHz"
+        case preset7kTo20kHz = "7kHz–20kHz"
+        case manual = "MANUAL"
+
+        var id: String { rawValue }
+    }
+
+    var selection: Selection {
+        switch self {
+        case .preset0to200Hz: .preset0to200Hz
+        case .preset200HzTo1kHz: .preset200HzTo1kHz
+        case .preset1kTo20kHz: .preset1kTo20kHz
+        case .preset7kTo20kHz: .preset7kTo20kHz
+        case .manual: .manual
+        }
+    }
+}
+
+/// Which noise color a `BandLimitedFilterChain` is shaping — its power spectral density
+/// determines how RMS scales with bandwidth, so it determines which level-compensation
+/// formula is correct. See docs/research/white-noise-band-limiting.md.
+enum NoiseSpectralShape {
+    /// Pink noise's PSD is 1/f — equal energy per octave.
+    case pinkOneOverF
+    /// White noise's PSD is flat — equal energy per Hz (linear frequency).
+    case whiteFlat
+}
+
 /// Cascades `Biquad` sections realizing a `BandLimitedPreset`'s optional highpass and/or
 /// lowpass edge, each edge a 4th-order (2-section) Butterworth cascade — the standard
 /// per-section Q values from docs/research/band-limited-noise-generation.md. Also applies
-/// `levelCompensationGain` so a narrowed band's RMS matches full-range pink noise's RMS at
-/// the same `levelDbfs` — see the comment on `fullRangeOctaveSpan` below for why.
+/// `levelCompensationGain` so a narrowed band's RMS matches full-range noise's RMS at
+/// the same `levelDbfs` — the formula depends on `shape` (see `NoiseSpectralShape` and the
+/// comment on `fullRangeOctaveSpan` below for why Pink and White need different math).
 struct BandLimitedFilterChain {
     private static let butterworth4thOrderQs: [Double] = [0.54120, 1.30656]
 
     private var sections: [Biquad] = []
     private let levelCompensationGain: Double
 
-    init(preset: BandLimitedPreset, sampleRate: Double) {
+    init(preset: BandLimitedPreset, sampleRate: Double, shape: NoiseSpectralShape) {
         let edges = preset.edges
         if let highpassHz = edges.highpassHz {
             sections += Self.butterworth4thOrderQs.map {
@@ -266,8 +373,14 @@ struct BandLimitedFilterChain {
         // everywhere else (frequency field, ThirdOctaveBands).
         let lowHz = edges.highpassHz ?? 20
         let highHz = edges.lowpassHz ?? 20000
-        let octaveSpan = log2(highHz / lowHz)
-        levelCompensationGain = octaveSpan > 0 ? (fullRangeOctaveSpan / octaveSpan).squareRoot() : 1
+        switch shape {
+        case .pinkOneOverF:
+            let octaveSpan = log2(highHz / lowHz)
+            levelCompensationGain = octaveSpan > 0 ? (fullRangeOctaveSpan / octaveSpan).squareRoot() : 1
+        case .whiteFlat:
+            let bandwidthHz = highHz - lowHz
+            levelCompensationGain = bandwidthHz > 0 ? (fullRangeBandwidthHz / bandwidthHz).squareRoot() : 1
+        }
     }
 
     mutating func process(_ x: Double) -> Double {
@@ -342,6 +455,23 @@ let fullRangeOctaveSpan = log2(20000.0 / 20.0)
 /// per-preset span, this compensation gain is a single fixed constant.
 let thirdOctaveLevelCompensationGain = (fullRangeOctaveSpan / (1.0 / 3.0)).squareRoot()
 
+/// White noise's PSD is flat -- equal energy per Hz, not per octave -- so its RMS² scales
+/// linearly with bandwidth in Hz, unlike Pink's octave-span scaling. `fullRangeBandwidthHz`
+/// is the linear-Hz analog of `fullRangeOctaveSpan`, used by `BandLimitedFilterChain`'s
+/// `.whiteFlat` shape and by `whiteThirdOctaveLevelCompensationGain` below. See
+/// docs/research/white-noise-band-limiting.md.
+let fullRangeBandwidthHz = 20000.0 - 20.0
+
+/// Unlike Pink's fixed-fraction 1/3-octave band (always exactly 1/3 octave wide, hence a
+/// single `thirdOctaveLevelCompensationGain` constant), a 1/3-octave band's width in Hz
+/// varies with its center frequency (roughly constant *percentage* bandwidth, so low bands
+/// are narrow in Hz and high bands are wide) -- so White's compensation has to be computed
+/// per band rather than as one constant. See docs/research/white-noise-band-limiting.md.
+func whiteThirdOctaveLevelCompensationGain(centerHz: Double) -> Double {
+    let bandwidthHz = centerHz * (pow(2, 1.0 / 6.0) - pow(2, -1.0 / 6.0))
+    return bandwidthHz > 0 ? (fullRangeBandwidthHz / bandwidthHz).squareRoot() : 1
+}
+
 struct RenderParameters: Equatable, Sendable {
     var generatorKind: GeneratorKind = .sine
     var frequencyHz: Double = 1000
@@ -349,7 +479,8 @@ struct RenderParameters: Equatable, Sendable {
     var running: Bool = false
     var channelMuted: [Bool] = []
     var channelPhaseReversed: [Bool] = []
-    var pinkNoiseMode: PinkNoiseMode = .fullRange
+    var pinkNoiseMode: NoiseMode = .fullRange
+    var whiteNoiseMode: NoiseMode = .fullRange
     var sweepDurationSeconds: Double = 10
 }
 
