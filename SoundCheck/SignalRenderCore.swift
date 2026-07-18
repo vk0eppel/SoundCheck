@@ -500,11 +500,15 @@ final class SignalRenderCore: @unchecked Sendable {
 
     // Audio-thread-only state: only ever touched inside `render`, which per the architecture
     // decided in #2 is called from a single real-time render callback, never concurrently.
-    nonisolated(unsafe) private let sineGenerator = SineGenerator()
-    nonisolated(unsafe) private let pinkGenerator = PinkNoiseGenerator()
-    nonisolated(unsafe) private let whiteGenerator = WhiteNoiseGenerator()
-    nonisolated(unsafe) private let sweepGenerator = SweepGenerator()
-    nonisolated(unsafe) private let squareGenerator = SquareGenerator()
+    // The five generators are `let` bindings to types the compiler already infers as
+    // `Sendable` (each is a `final class` with no non-Sendable stored state), so — unlike
+    // the `var`s below, which are mutated from `render` and still need it — they don't need
+    // `nonisolated(unsafe)`.
+    private let sineGenerator = SineGenerator()
+    private let pinkGenerator = PinkNoiseGenerator()
+    private let whiteGenerator = WhiteNoiseGenerator()
+    private let sweepGenerator = SweepGenerator()
+    private let squareGenerator = SquareGenerator()
     nonisolated(unsafe) private var rampGain: Double = 0
     // Only adopted from `RenderParameters.generatorKind` once `rampGain` reaches silence —
     // otherwise a signal-type switch mid-ramp would audibly fade out the *new* generator
