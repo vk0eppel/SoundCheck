@@ -498,9 +498,9 @@ struct ContentView: View {
             signalSettings.isRunning.toggle()
         } label: {
             HStack(spacing: 10) {
-                // A red tally light -- "the signal is live" -- not the amber accent, which is
-                // reserved for a selected preference (ADR 0005). Same language as FreqTrace's
-                // capture-running Stop/Start indicator.
+                // A red tally light -- "the signal is live" -- matching FreqTrace's
+                // capture-running Stop/Start indicator; distinct from the amber "armed" outline
+                // of the idle state below (ADR 0005).
                 LEDIndicator(isLit: signalSettings.isRunning, color: theme.danger)
                 Text(signalSettings.isRunning ? "ON" : "OFF")
                     .font(.title2.weight(.bold))
@@ -511,13 +511,17 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Lifted above the `surface` panel it sits in (a raised control at chassis tone) --
-        // ADR 0005's elevation model.
-        .background(signalSettings.isRunning ? theme.danger.opacity(0.14) : theme.surfaceRaised)
+        // The primary run control needs presence in both appearance modes, so it doesn't lean
+        // on a neutral surface fill -- in Light the neutral tokens sit too close to the white
+        // panel and the button vanishes. Instead: an amber-outlined "armed" idle state and a
+        // red-filled "live" running state (amber/red both contrast against a white *and* a dark
+        // panel) -- a standby->live instrument progression (ADR 0005).
+        .background((signalSettings.isRunning ? theme.danger : theme.accent)
+            .opacity(signalSettings.isRunning ? 0.18 : 0.10))
         .foregroundStyle(signalSettings.isRunning ? theme.danger : theme.text)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(signalSettings.isRunning ? theme.danger.opacity(0.6) : theme.border, lineWidth: 1)
+                .strokeBorder(signalSettings.isRunning ? theme.danger : theme.accent.opacity(0.55), lineWidth: 1.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .keyboardShortcut(.space, modifiers: [])
