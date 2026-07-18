@@ -112,11 +112,15 @@ struct ChannelState: Equatable {
     var phaseReversed = false
 }
 
-/// SoundCheck's one signature accent — a warning-lamp amber, used only for the running
-/// state and its echoes (the phase toggle, the LED). Everything else stays semantic
-/// system color so light/dark appearance keeps following the system automatically.
+/// SoundCheck's one signature accent — a warning-lamp amber, used for the running state and
+/// its echoes (the phase toggle, the LED), the selected signal-type tab, and (as a subtle
+/// hairline glow, not a fill) the numeric-readout fields' `LCDFieldStyle`. Everything else
+/// stays semantic system color so light/dark appearance keeps following the system
+/// automatically — `soundCheckLCDPanel` is the one deliberate, narrow exception, matching
+/// the amber LED's own appearance-independent color (see `LCDFieldStyle`'s doc comment).
 extension Color {
     static let soundCheckAmber = Color(red: 0.90, green: 0.58, blue: 0.10)
+    static let soundCheckLCDPanel = Color(red: 0.07, green: 0.065, blue: 0.06)
 }
 
 /// A titled grouping, evoking a labeled zone on an instrument's front panel — not
@@ -163,6 +167,41 @@ private struct SolidToggleStyle: ToggleStyle {
                 .strokeBorder(configuration.isOn ? Color.clear : Color.secondary.opacity(0.4), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// SoundCheck's numeric-readout treatment for Frequency/Level/Duration/manual-range fields —
+/// a dark inset panel with a hairline glow echoing the ON/OFF button's amber LED
+/// (`onOffButton`), since these fields are the closest thing in the design to an actual
+/// instrument's numeric display. Deliberately dark regardless of system appearance, the same
+/// way a real LCD/VFD readout's backlight doesn't turn white in a bright room — text color is
+/// forced light to stay legible against it in both light and dark appearance. Styling only:
+/// doesn't touch any field's commit-timing, clamping, or snapping behavior.
+private struct LCDFieldStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .foregroundStyle(Color.white.opacity(0.92))
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .background(
+                // Opaque, not a translucent black -- a `.opacity()` fill blends toward
+                // whatever's behind it, which washes out to a pale gray (not a dark LCD
+                // panel) against a light-appearance PanelSection background.
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.soundCheckLCDPanel)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.soundCheckAmber.opacity(0.35), lineWidth: 1)
+            )
+            .shadow(color: Color.soundCheckAmber.opacity(0.25), radius: 3)
+    }
+}
+
+private extension View {
+    func lcdFieldStyle() -> some View {
+        modifier(LCDFieldStyle())
     }
 }
 
@@ -450,9 +489,9 @@ struct ContentView: View {
 
             TextField("Hz", value: $frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 80)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 80)
                 .focused($editableFieldFocus, equals: .frequency)
                 .onChange(of: frequencyHz) { _, newValue in
                     frequencyHz = min(max(newValue, 20), 20000)
@@ -497,9 +536,9 @@ struct ContentView: View {
 
             TextField("Hz", value: $thirdOctaveHzDraft, format: .number.grouping(.never).precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 80)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 80)
                 .focused($thirdOctaveFieldFocused)
                 .onSubmit {
                     commitThirdOctaveDraft()
@@ -553,6 +592,11 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.segmented)
+        // Deliberately neutral, not system blue and not `.soundCheckAmber` -- amber is
+        // reserved for the running-state LED, the selected signal-type tab, and the engaged
+        // Ø toggle only (docs/v1-spec.md's Visual design section), and this control isn't
+        // one of those three.
+        .tint(.secondary)
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
@@ -579,9 +623,9 @@ struct ContentView: View {
         HStack(spacing: 4) {
             TextField("Low", value: $manualLowHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 55)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 55)
                 .focused($manualRangeFieldFocus, equals: .low)
                 .onSubmit {
                     commitManualLowHz()
@@ -591,9 +635,9 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
             TextField("High", value: $manualHighHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 55)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 55)
                 .focused($manualRangeFieldFocus, equals: .high)
                 .onSubmit {
                     commitManualHighHz()
@@ -604,6 +648,12 @@ struct ContentView: View {
             if oldValue == .low && newValue != .low { commitManualLowHz() }
             if oldValue == .high && newValue != .high { commitManualHighHz() }
         }
+        // Explicit, tighter than the TextFields' own natural height -- reserved uniformly
+        // whether this row is shown or hidden (see the `.opacity`/`.disabled` gate above),
+        // so the gap above Level reads tight in every mode without touching the
+        // reserve-space/no-reflow guarantee itself. Comfortably fits the Low/High fields
+        // when they're actually visible (Band-limited/Manual).
+        .frame(height: 24)
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl`/
@@ -619,9 +669,9 @@ struct ContentView: View {
 
             TextField("s", value: $sweepDurationSeconds, format: .number.grouping(.never).precision(.fractionLength(0...2)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 70)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 70)
                 .focused($editableFieldFocus, equals: .duration)
                 .onChange(of: sweepDurationSeconds) { _, newValue in
                     sweepDurationSeconds = min(max(newValue, 1), 60)
@@ -659,9 +709,9 @@ struct ContentView: View {
 
             TextField("dBFS", value: $levelDbfs, format: .number.precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 70)
                 .multilineTextAlignment(.center)
-                .textFieldStyle(.roundedBorder)
+                .lcdFieldStyle()
+                .frame(width: 70)
                 .focused($editableFieldFocus, equals: .level)
                 .onChange(of: levelDbfs) { _, newValue in
                     levelDbfs = min(max(newValue, -99), 0)
