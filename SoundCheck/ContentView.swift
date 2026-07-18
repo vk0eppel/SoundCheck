@@ -882,12 +882,28 @@ private struct WindowAccessor: NSViewRepresentable {
             // frequency field) as soon as the window becomes key, which swallows the
             // spacebar as a typed character instead of triggering the ON/OFF shortcut.
             // initialFirstResponder only governs the *next* time the window becomes
-            // key (which may already have happened by now), so also force the
-            // current first responder away explicitly. Only runs here in makeNSView,
-            // not updateNSView, so it doesn't keep stealing focus from the user later.
+            // key, so if it's already key by now, force the current first responder
+            // away explicitly -- but if it isn't key yet, wait for
+            // didBecomeKeyNotification instead of calling makeFirstResponder
+            // immediately: calling it before the window is actually key triggers a
+            // synchronous handoff to a lower-QoS AppKit input-system thread, a
+            // priority-inversion Xcode's Thread Performance Checker flags at runtime.
+            // One-shot (removes itself after firing once) and only set up here in
+            // makeNSView, not updateNSView, so it doesn't keep stealing focus from
+            // the user later.
             if let window = view.window {
                 window.initialFirstResponder = window.contentView
-                window.makeFirstResponder(window.contentView)
+                if window.isKeyWindow {
+                    window.makeFirstResponder(window.contentView)
+                } else {
+                    var observer: NSObjectProtocol?
+                    observer = NotificationCenter.default.addObserver(
+                        forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+                    ) { _ in
+                        window.makeFirstResponder(window.contentView)
+                        if let observer { NotificationCenter.default.removeObserver(observer) }
+                    }
+                }
             }
             configure(view)
         }
