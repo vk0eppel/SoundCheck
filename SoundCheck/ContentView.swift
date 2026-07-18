@@ -181,11 +181,11 @@ private struct PanelSection<Content: View>: View {
     }
 }
 
-/// A lit LED beside the label + a soft color wash when on, dim outline when off — the shared
-/// console language (ADR 0005, `LEDIndicator`): "one lit indicator = one active state" rather
-/// than flooding the whole control with the accent, so Mute (`theme.danger`) and Ø
-/// (`theme.accent`) read as different kinds of control while staying unmistakable at a glance.
-private struct LEDToggleStyle: ToggleStyle {
+/// Solid color fill + bold white text when on, dim outline when off — engaged/disengaged
+/// must be unmistakable at a glance. Mute especially is a safety-critical state (every channel
+/// muted by default, ADR 0001), so it deliberately floods the whole control rather than using
+/// the softer lit-LED language (ADR 0005): a small dot undersells "am I muted?".
+private struct SolidToggleStyle: ToggleStyle {
     @Environment(\.theme) private var theme
     let color: Color
 
@@ -193,21 +193,18 @@ private struct LEDToggleStyle: ToggleStyle {
         Button {
             configuration.isOn.toggle()
         } label: {
-            HStack(spacing: 6) {
-                LEDIndicator(isLit: configuration.isOn, color: color)
-                configuration.label
-                    .font(.caption.weight(.bold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            configuration.label
+                .font(.caption.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(configuration.isOn ? color.opacity(0.14) : Color.clear)
-        .foregroundStyle(configuration.isOn ? theme.text : theme.textDim)
+        .background(configuration.isOn ? color : Color.clear)
+        .foregroundStyle(configuration.isOn ? .white : theme.textDim)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(configuration.isOn ? color.opacity(0.5) : theme.border, lineWidth: 1)
+                .strokeBorder(configuration.isOn ? Color.clear : theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
@@ -831,12 +828,12 @@ struct ContentView: View {
                         Toggle(isOn: $signalSettings.channels[index].muted) {
                             Text("Mute")
                         }
-                        .toggleStyle(LEDToggleStyle(color: theme.danger))
+                        .toggleStyle(SolidToggleStyle(color: theme.danger))
 
                         Toggle(isOn: $signalSettings.channels[index].phaseReversed) {
                             Text("Ø")
                         }
-                        .toggleStyle(LEDToggleStyle(color: theme.accent))
+                        .toggleStyle(SolidToggleStyle(color: theme.accent))
                     }
                     .padding(8)
                     // A channel-strip plate recessed into the raised panel (theme.surface,
