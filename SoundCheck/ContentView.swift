@@ -170,14 +170,14 @@ private struct PanelSection<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // A dark meter well (the darkest tone + a soft hairline), matching FreqTrace's Tracked
-        // Frequency / SPL panels (its `meterPanel`: `bg` + `borderSoft`) -- recessed into the
-        // window's lighter `surfaceRaised` chassis. The interactive controls inside sit back up
-        // as `surface` plates (ADR 0005).
-        .background(theme.bg, in: RoundedRectangle(cornerRadius: 12))
+        // A mid console plate (`surface` + `border`), matching FreqTrace's Weighting/FFT Size
+        // control modules (its `consolePlate`) -- recessed into the window's lighter
+        // `surfaceRaised` chassis. The interactive controls inside lift back up to
+        // `surfaceRaised`; the LCD readouts stay darkest (ADR 0005).
+        .background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(theme.borderSoft, lineWidth: 1)
+                .strokeBorder(theme.border, lineWidth: 1)
         )
     }
 }
@@ -511,9 +511,9 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Recessed darker than the panel it sits in (a plate cut into the surface, like
-        // FreqTrace's consolePlate), not a lighter raised block -- ADR 0005's elevation model.
-        .background(signalSettings.isRunning ? theme.danger.opacity(0.14) : theme.surface)
+        // Lifted above the `surface` panel it sits in (a raised control at chassis tone) --
+        // ADR 0005's elevation model.
+        .background(signalSettings.isRunning ? theme.danger.opacity(0.14) : theme.surfaceRaised)
         .foregroundStyle(signalSettings.isRunning ? theme.danger : theme.text)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -652,10 +652,10 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.segmented)
-        // Deliberately neutral, not `theme.accent` -- amber is reserved for the selected
-        // signal-type tab and the engaged Ø toggle (ADR 0005), and this sub-mode picker
-        // isn't one of those.
-        .tint(theme.textDim)
+        // Amber selection, same as the signal-type picker above -- FreqTrace tints every
+        // selected segment amber (its WATERFALL/RTA tabs and its 1/1..1/48 banding row alike),
+        // so one grey picker stacked under an amber one just read as inconsistent (ADR 0005).
+        .tint(theme.accent)
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
@@ -839,10 +839,9 @@ struct ContentView: View {
                         .toggleStyle(SolidToggleStyle(color: theme.accent))
                     }
                     .padding(8)
-                    // A channel-strip plate recessed into the raised panel (theme.surface,
-                    // like FreqTrace's consolePlate) -- one step darker than the panel, one
-                    // step lighter than the LCD display wells. ADR 0005's elevation model.
-                    .background(theme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    // A channel-strip plate lifted above the `surface` panel (surfaceRaised,
+                    // chassis tone) -- ADR 0005's elevation model.
+                    .background(theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
                             .strokeBorder(theme.border, lineWidth: 1)
