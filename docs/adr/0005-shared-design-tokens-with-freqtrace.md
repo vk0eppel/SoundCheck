@@ -14,6 +14,7 @@ Adopting it also resolves a real flaw in SoundCheck's own accent discipline: `so
 
 ## Consequences
 
+- **Elevation follows FreqTrace's "dark wells cut into a raised surface" model**, not "lighter panels floating on a dark background." Three tiers, matching FreqTrace's `consolePlate`/`meterPanel`: the window is `bg` (darkest); a `PanelSection` is the raised working surface (`surfaceRaised`); controls and display fields *recess* darker into it — the ON/OFF button and channel-strip tiles to `surface`, the numeric LCD readouts deepest of all. A field being *darker* than the surface around it is what reads as "a display/control let into the panel"; getting this backwards (a lighter, raised button) was the first thing that broke the shared-console illusion even with the palette already matched.
 - SoundCheck no longer follows system appearance; it drives `.preferredColorScheme` from `AppearanceSettings.mode` so any residual system-semantic colors match the owned theme.
 - The **LCD numeric readout stays always-dark regardless of mode** (a real instrument backlight doesn't go white in a bright room) — the one deliberate carve-out from the theme, using a fixed dark panel color rather than `theme.bg`, which flips pale in Light mode. This preserves the "backlit display" signature that V1's `soundCheckLCDPanel` established.
 - The token files are currently a copy, not a shared Swift package. If a third consumer appears, or the palettes drift, promote them to a shared package. Until then a copy avoids restructuring two Xcode projects.

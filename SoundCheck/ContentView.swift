@@ -170,7 +170,10 @@ private struct PanelSection<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
+        // The raised working surface (lighter than the window's `bg`), matching FreqTrace's
+        // rows -- so the numeric wells/buttons recessed inside it read as darker cut-ins, not
+        // lighter floating blocks (ADR 0005).
+        .background(theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(theme.border, lineWidth: 1)
@@ -508,7 +511,9 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(signalSettings.isRunning ? theme.danger.opacity(0.14) : theme.surfaceRaised)
+        // Recessed darker than the panel it sits in (a plate cut into the surface, like
+        // FreqTrace's consolePlate), not a lighter raised block -- ADR 0005's elevation model.
+        .background(signalSettings.isRunning ? theme.danger.opacity(0.14) : theme.surface)
         .foregroundStyle(signalSettings.isRunning ? theme.danger : theme.text)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
@@ -834,7 +839,10 @@ struct ContentView: View {
                         .toggleStyle(LEDToggleStyle(color: theme.accent))
                     }
                     .padding(8)
-                    .background(theme.bg, in: RoundedRectangle(cornerRadius: 8))
+                    // A channel-strip plate recessed into the raised panel (theme.surface,
+                    // like FreqTrace's consolePlate) -- one step darker than the panel, one
+                    // step lighter than the LCD display wells. ADR 0005's elevation model.
+                    .background(theme.surface, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
                             .strokeBorder(theme.border, lineWidth: 1)
