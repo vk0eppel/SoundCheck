@@ -170,13 +170,14 @@ private struct PanelSection<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // The raised working surface (lighter than the window's `bg`), matching FreqTrace's
-        // rows -- so the numeric wells/buttons recessed inside it read as darker cut-ins, not
-        // lighter floating blocks (ADR 0005).
-        .background(theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 12))
+        // A dark meter well (the darkest tone + a soft hairline), matching FreqTrace's Tracked
+        // Frequency / SPL panels (its `meterPanel`: `bg` + `borderSoft`) -- recessed into the
+        // window's lighter `surfaceRaised` chassis. The interactive controls inside sit back up
+        // as `surface` plates (ADR 0005).
+        .background(theme.bg, in: RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(theme.border, lineWidth: 1)
+                .strokeBorder(theme.borderSoft, lineWidth: 1)
         )
     }
 }
@@ -449,7 +450,9 @@ struct ContentView: View {
         }
         .padding(20)
         .frame(width: 420)
-        .background(theme.bg)
+        // The lighter console chassis the dark GENERATOR/OUTPUT wells recess into, mirroring
+        // FreqTrace's meter-panel-on-surfaceRaised layering (ADR 0005).
+        .background(theme.surfaceRaised)
         .environment(\.theme, theme)
         .preferredColorScheme(appearanceSettings.mode == .dark ? .dark : .light)
         .contentShape(Rectangle())
