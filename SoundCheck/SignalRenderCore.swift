@@ -118,21 +118,72 @@ final class SweepGenerator: SignalGenerator {
     }
 }
 
-/// xorshift64* — fast, non-cryptographic, real-time-safe. Not SystemRandomNumberGenerator,
-/// which draws from OS entropy per call and isn't real-time-safe. See docs/research/pink-white-noise-generation.md.
-/// Carries the same three sub-modes Pink noise does (see docs/research/white-noise-band-limiting.md
-/// for why White's level-compensation math has to differ from Pink's), rebuilt only when the
-/// mode actually changes, mirroring `PinkNoiseGenerator`'s shape.
-final class WhiteNoiseGenerator: SignalGenerator {
-    private var state: UInt64
+/// Owns "rebuild the band-limited/1/3-octave filter when `NoiseMode` changes, else reuse"
+/// and "dispatch the raw sample through whichever filter (or none) is currently active" —
+/// the ~25-line pattern `PinkNoiseGenerator` and `WhiteNoiseGenerator` used to each implement
+/// separately, identical but for `NoiseSpectralShape` and White's extra per-band
+/// compensation gain. Real-time-safe: filters are only rebuilt on an actual mode change,
+/// never per sample, the same guarantee the two generators already provided individually.
+struct NoiseModeFilter {
+    private let shape: NoiseSpectralShape
+    private let thirdOctaveCompensationGain: (Double) -> Double
 
     private var currentMode: NoiseMode = .fullRange
     private var bandLimitedFilter: BandLimitedFilterChain?
     private var thirdOctaveFilter: ThirdOctaveFilterChain?
-    // Computed once when `.thirdOctave` is (re)adopted, not per sample -- unlike Pink's
-    // fixed `thirdOctaveLevelCompensationGain` constant, White's is a function of centerHz,
-    // so it can't be a simple `let` and must be cached here instead.
-    private var thirdOctaveCompensationGain: Double = 1
+    // Computed once when `.thirdOctave` is (re)adopted, not per sample -- Pink passes a
+    // closure returning its fixed `thirdOctaveLevelCompensationGain` constant; White's is a
+    // function of centerHz, so it can't be a simple constant and must be cached here instead.
+    private var cachedThirdOctaveCompensationGain: Double = 1
+
+    /// `thirdOctaveCompensationGain` computes the per-band makeup gain applied after
+    /// `ThirdOctaveFilterChain`, given the band's center Hz — Pink passes
+    /// `{ _ in thirdOctaveLevelCompensationGain }` (its fixed constant), White passes
+    /// `whiteThirdOctaveLevelCompensationGain(centerHz:)` directly (a function of center Hz,
+    /// since White's flat PSD needs different per-band math than Pink's 1/f one).
+    init(shape: NoiseSpectralShape, thirdOctaveCompensationGain: @escaping (Double) -> Double) {
+        self.shape = shape
+        self.thirdOctaveCompensationGain = thirdOctaveCompensationGain
+    }
+
+    mutating func process(_ sample: Double, mode: NoiseMode, sampleRate: Double) -> Double {
+        if mode != currentMode {
+            currentMode = mode
+            switch mode {
+            case .fullRange:
+                bandLimitedFilter = nil
+                thirdOctaveFilter = nil
+            case .bandLimited(let preset):
+                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: shape)
+                thirdOctaveFilter = nil
+            case .thirdOctave(let bandIndex):
+                let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
+                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
+                cachedThirdOctaveCompensationGain = thirdOctaveCompensationGain(centerHz)
+                bandLimitedFilter = nil
+            }
+        }
+
+        switch currentMode {
+        case .fullRange:
+            return sample
+        case .bandLimited:
+            return bandLimitedFilter?.process(sample) ?? sample
+        case .thirdOctave:
+            return (thirdOctaveFilter?.process(sample) ?? sample) * cachedThirdOctaveCompensationGain
+        }
+    }
+}
+
+/// xorshift64* — fast, non-cryptographic, real-time-safe. Not SystemRandomNumberGenerator,
+/// which draws from OS entropy per call and isn't real-time-safe. See docs/research/pink-white-noise-generation.md.
+/// Carries the same three sub-modes Pink noise does (see docs/research/white-noise-band-limiting.md
+/// for why White's level-compensation math has to differ from Pink's), rebuilt only when the
+/// mode actually changes, via the shared `NoiseModeFilter`.
+final class WhiteNoiseGenerator: SignalGenerator {
+    private var state: UInt64
+    private var noiseModeFilter = NoiseModeFilter(
+        shape: .whiteFlat, thirdOctaveCompensationGain: whiteThirdOctaveLevelCompensationGain(centerHz:))
 
     init(seed: UInt64 = 0x2545_F491_4F6C_DD1D) {
         state = seed
@@ -152,33 +203,8 @@ final class WhiteNoiseGenerator: SignalGenerator {
     }
 
     func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
-        if parameters.whiteNoiseMode != currentMode {
-            currentMode = parameters.whiteNoiseMode
-            switch currentMode {
-            case .fullRange:
-                bandLimitedFilter = nil
-                thirdOctaveFilter = nil
-            case .bandLimited(let preset):
-                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: .whiteFlat)
-                thirdOctaveFilter = nil
-            case .thirdOctave(let bandIndex):
-                let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
-                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
-                thirdOctaveCompensationGain = whiteThirdOctaveLevelCompensationGain(centerHz: centerHz)
-                bandLimitedFilter = nil
-            }
-        }
-
         let whiteSample = rawSample()
-
-        switch currentMode {
-        case .fullRange:
-            return whiteSample
-        case .bandLimited:
-            return bandLimitedFilter?.process(whiteSample) ?? whiteSample
-        case .thirdOctave:
-            return (thirdOctaveFilter?.process(whiteSample) ?? whiteSample) * thirdOctaveCompensationGain
-        }
+        return noiseModeFilter.process(whiteSample, mode: parameters.whiteNoiseMode, sampleRate: sampleRate)
     }
 }
 
@@ -198,31 +224,14 @@ final class PinkNoiseGenerator: SignalGenerator {
     // Rebuilt only when `pinkNoiseMode` actually changes (never per sample) — see
     // docs/research/band-limited-noise-generation.md and
     // docs/research/one-third-octave-noise-generation.md.
-    private var currentMode: NoiseMode = .fullRange
-    private var bandLimitedFilter: BandLimitedFilterChain?
-    private var thirdOctaveFilter: ThirdOctaveFilterChain?
+    private var noiseModeFilter = NoiseModeFilter(
+        shape: .pinkOneOverF, thirdOctaveCompensationGain: { _ in thirdOctaveLevelCompensationGain })
 
     init(seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
         white = WhiteNoiseGenerator(seed: seed)
     }
 
     func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
-        if parameters.pinkNoiseMode != currentMode {
-            currentMode = parameters.pinkNoiseMode
-            switch currentMode {
-            case .fullRange:
-                bandLimitedFilter = nil
-                thirdOctaveFilter = nil
-            case .bandLimited(let preset):
-                bandLimitedFilter = BandLimitedFilterChain(preset: preset, sampleRate: sampleRate, shape: .pinkOneOverF)
-                thirdOctaveFilter = nil
-            case .thirdOctave(let bandIndex):
-                let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
-                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
-                bandLimitedFilter = nil
-            }
-        }
-
         // Raw draw only, no mode dispatch -- Pink's internal white-noise source must stay
         // unaffected by `RenderParameters.whiteNoiseMode` (see `WhiteNoiseGenerator.rawSample`).
         let whiteSample = white.rawSample()
@@ -235,14 +244,7 @@ final class PinkNoiseGenerator: SignalGenerator {
         let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362) * 0.11 * pinkLevelCompensationGain
         b6 = whiteSample * 0.115926
 
-        switch currentMode {
-        case .fullRange:
-            return pink
-        case .bandLimited:
-            return bandLimitedFilter?.process(pink) ?? pink
-        case .thirdOctave:
-            return (thirdOctaveFilter?.process(pink) ?? pink) * thirdOctaveLevelCompensationGain
-        }
+        return noiseModeFilter.process(pink, mode: parameters.pinkNoiseMode, sampleRate: sampleRate)
     }
 }
 

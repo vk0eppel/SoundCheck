@@ -9,6 +9,7 @@
 //  SPDX-License-Identifier: GPL-3.0-or-later
 //  Full license text: see LICENSE in the repository root.
 
+import CoreAudio
 import Foundation
 import Testing
 @testable import SoundCheck
@@ -29,6 +30,28 @@ struct SoundCheckTests {
         let devices = AudioDeviceCatalog.fetchOutputDevices()
         #expect(!devices.isEmpty)
         #expect(devices.allSatisfy { !$0.uid.isEmpty && $0.outputChannelCount > 0 })
+    }
+
+    @Test func floatBufferConvertsAudioBufferListEntryToATypedWritableBuffer() async throws {
+        let frameCount = 4
+        var samples = [Float](repeating: 0, count: frameCount)
+        samples.withUnsafeMutableBufferPointer { samplesPointer in
+            var audioBuffer = AudioBuffer(
+                mNumberChannels: 1,
+                mDataByteSize: UInt32(frameCount * MemoryLayout<Float>.size),
+                mData: UnsafeMutableRawPointer(samplesPointer.baseAddress)
+            )
+            withUnsafeMutablePointer(to: &audioBuffer) { audioBufferPointer in
+                var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: audioBufferPointer.pointee)
+                withUnsafeMutablePointer(to: &bufferList) { listPointer in
+                    let buffers = UnsafeMutableAudioBufferListPointer(listPointer)
+                    let result = AudioEngineController.floatBuffer(forChannel: 0, in: buffers, frameCount: frameCount)
+                    #expect(result.count == frameCount)
+                    result[2] = 42
+                }
+            }
+        }
+        #expect(samples[2] == 42)
     }
 #endif
 
@@ -775,6 +798,100 @@ struct SoundCheckTests {
             let draft = NoiseModeDraft(resolving: mode)
             #expect(draft.resolved == mode)
         }
+    }
+
+    @Test func commitManualLowClampsToTwentyHzFloor() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualHighHz = 1000
+        let committed = draft.commitManualLow(5)
+        #expect(committed == 20)
+        #expect(draft.manualLowHz == 20)
+    }
+
+    @Test func commitManualLowClampsBelowCurrentHigh() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualHighHz = 500
+        let committed = draft.commitManualLow(499)
+        #expect(committed == 499)
+        #expect(draft.manualLowHz == 499)
+
+        let clamped = draft.commitManualLow(600)
+        #expect(clamped == 499) // manualHighHz - 1
+        #expect(draft.manualLowHz == 499)
+    }
+
+    @Test func commitManualHighClampsToTwentyKHzCeiling() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualLowHz = 200
+        let committed = draft.commitManualHigh(25000)
+        #expect(committed == 20000)
+        #expect(draft.manualHighHz == 20000)
+    }
+
+    @Test func commitManualHighClampsAboveCurrentLow() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualLowHz = 500
+        let clamped = draft.commitManualHigh(100)
+        #expect(clamped == 501) // manualLowHz + 1
+        #expect(draft.manualHighHz == 501)
+    }
+
+    /// Documents the intended (not buggy) commit-on-blur behavior: committing Low clamps
+    /// against whatever High was last *committed*, not an uncommitted edit still sitting in
+    /// High's own draft `@State` — the two fields only ever exchange state at commit time,
+    /// per `NoiseModeDraft`'s own doc comment on why per-keystroke drafts stay outside it.
+    @Test func commitManualLowClampsAgainstLastCommittedHighNotAnUncommittedEdit() async throws {
+        var draft = NoiseModeDraft()
+        draft.manualHighHz = 1000
+
+        // Simulates: the user types a new High (300) but hasn't committed it yet (still in
+        // ContentView's manualHighHzDraft @State, never reaches the draft), then commits Low.
+        let committedLow = draft.commitManualLow(950)
+
+        #expect(committedLow == 950) // clamps against the still-committed 1000, not 300
+        #expect(draft.manualLowHz == 950)
+    }
+
+    @Test func commitThirdOctaveBandClampsThenSnapsToNearestBand() async throws {
+        var draft = NoiseModeDraft()
+        let snapped = draft.commitThirdOctaveBand(fromTypedHz: 990)
+        #expect(snapped == 1000)
+        #expect(ThirdOctaveBands.centerFrequenciesHz[draft.thirdOctaveBandIndex] == 1000)
+    }
+
+    @Test func commitThirdOctaveBandClampsOutOfRangeValuesFirst() async throws {
+        var draft = NoiseModeDraft()
+        let snappedLow = draft.commitThirdOctaveBand(fromTypedHz: 5)
+        #expect(snappedLow == ThirdOctaveBands.centerFrequenciesHz.first)
+
+        let snappedHigh = draft.commitThirdOctaveBand(fromTypedHz: 30000)
+        #expect(snappedHigh == ThirdOctaveBands.centerFrequenciesHz.last)
+    }
+
+    @Test func steppedThirdOctaveBandMovesToAdjacentBands() async throws {
+        var draft = NoiseModeDraft()
+        draft.thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000)!
+
+        let next = draft.steppedThirdOctaveBand(direction: 1)
+        #expect(next == ThirdOctaveBands.centerFrequenciesHz[draft.thirdOctaveBandIndex])
+        #expect(draft.thirdOctaveBandIndex == ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000)! + 1)
+
+        let previous = draft.steppedThirdOctaveBand(direction: -1)
+        #expect(previous == 1000)
+        #expect(draft.thirdOctaveBandIndex == ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: 1000))
+    }
+
+    @Test func steppedThirdOctaveBandStaysPutAtTableEdges() async throws {
+        var draft = NoiseModeDraft()
+        draft.thirdOctaveBandIndex = 0
+        let steppedDown = draft.steppedThirdOctaveBand(direction: -1)
+        #expect(steppedDown == ThirdOctaveBands.centerFrequenciesHz.first)
+        #expect(draft.thirdOctaveBandIndex == 0)
+
+        draft.thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.count - 1
+        let steppedUp = draft.steppedThirdOctaveBand(direction: 1)
+        #expect(steppedUp == ThirdOctaveBands.centerFrequenciesHz.last)
+        #expect(draft.thirdOctaveBandIndex == ThirdOctaveBands.centerFrequenciesHz.count - 1)
     }
 
     @MainActor

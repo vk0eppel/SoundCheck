@@ -59,14 +59,28 @@ final class AudioEngineController {
         let node = AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList -> OSStatus in
             let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
             renderCore.render(frameCount: Int(frameCount), channelCount: buffers.count, sampleRate: format.sampleRate) { channel in
-                let raw = buffers[channel].mData!.assumingMemoryBound(to: Float.self)
-                return UnsafeMutableBufferPointer(start: raw, count: Int(frameCount))
+                Self.floatBuffer(forChannel: channel, in: buffers, frameCount: Int(frameCount))
             }
             return noErr
         }
         engine.attach(node)
         engine.connect(node, to: engine.outputNode, format: format)
         sourceNode = node
+    }
+
+    /// Converts one channel's `AudioBuffer` entry into a typed sample buffer for
+    /// `SignalRenderCore.render` — pure and allocation-free, so (unlike the
+    /// `AVAudioSourceNode` render closure it's called from) it's unit-testable with a
+    /// hand-built `AudioBufferList`, without needing a real audio engine. `nonisolated`
+    /// since it touches no actor-isolated state, matching `AudioDeviceCatalog`'s static
+    /// query functions. Force-unwraps `mData`: in valid `AVAudioSourceNode` usage with a
+    /// properly configured `AVAudioFormat`, every channel's buffer is always backed by
+    /// real storage.
+    nonisolated static func floatBuffer(
+        forChannel channel: Int, in buffers: UnsafeMutableAudioBufferListPointer, frameCount: Int
+    ) -> UnsafeMutableBufferPointer<Float> {
+        let raw = buffers[channel].mData!.assumingMemoryBound(to: Float.self)
+        return UnsafeMutableBufferPointer(start: raw, count: frameCount)
     }
 
     private func setCoreAudioOutputDevice(_ deviceID: AudioDeviceID) -> Bool {

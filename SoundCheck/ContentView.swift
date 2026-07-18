@@ -70,6 +70,46 @@ struct NoiseModeDraft {
         case .manual: .manual(lowHz: manualLowHz, highHz: manualHighHz)
         }
     }
+
+    /// Clamps a typed Low value to the app's 20Hz floor and below the *last-committed*
+    /// `manualHighHz` — not any uncommitted edit still sitting in the caller's own draft
+    /// `@State` for High, since the two fields only ever exchange state at commit time (see
+    /// this type's doc comment). Returns the clamped value so the caller can reseed its own
+    /// per-keystroke draft `@State` with it.
+    mutating func commitManualLow(_ typedHz: Double) -> Double {
+        let clamped = min(max(typedHz, 20), manualHighHz - 1)
+        manualLowHz = clamped
+        return clamped
+    }
+
+    /// Symmetric with `commitManualLow` — clamps to the app's 20kHz ceiling and above the
+    /// last-committed `manualLowHz`.
+    mutating func commitManualHigh(_ typedHz: Double) -> Double {
+        let clamped = max(min(typedHz, 20000), manualLowHz + 1)
+        manualHighHz = clamped
+        return clamped
+    }
+
+    /// Clamps a typed Hz to the app's 20Hz-20kHz range, then snaps it to the nearest ISO 266
+    /// band — `direction: 0` reuses `ThirdOctaveBands.step`'s existing nearest-index search
+    /// rather than duplicating it. Returns the snapped Hz so the caller can reseed its own
+    /// per-keystroke draft `@State` with it.
+    mutating func commitThirdOctaveBand(fromTypedHz typedHz: Double) -> Double {
+        let clamped = min(max(typedHz, 20), 20000)
+        let snapped = ThirdOctaveBands.step(from: clamped, direction: 0)
+        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: snapped) ?? thirdOctaveBandIndex
+        return snapped
+    }
+
+    /// Moves to the previous/next ISO 266 band relative to the currently-selected one,
+    /// clamped at the band table's edges. Returns the new band's Hz so the caller can reseed
+    /// its own per-keystroke draft `@State` with it.
+    mutating func steppedThirdOctaveBand(direction: Int) -> Double {
+        let currentHz = ThirdOctaveBands.centerFrequenciesHz[thirdOctaveBandIndex]
+        let newHz = ThirdOctaveBands.step(from: currentHz, direction: direction)
+        thirdOctaveBandIndex = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? thirdOctaveBandIndex
+        return newHz
+    }
 }
 
 /// Identifies which manual-range field currently has focus, so losing focus (blur) can be
@@ -251,6 +291,45 @@ struct ContentView: View {
         )
     }
 
+    /// What the shared frequency-like slot should render right now — Sine/Square's frequency
+    /// field, noise Band-limited's "Range" picker, noise 1/3-Octave's band field, or Sweep's
+    /// duration field. The one source of truth `frequencyOrRangeControl`'s dispatch reads
+    /// directly, instead of re-deriving the same noise-family/signal-type condition a second
+    /// time the way `frequencyOrRangeControlVisible` used to.
+    private enum FrequencySlotContent {
+        case frequency
+        case range
+        case thirdOctave
+        case duration
+    }
+
+    private var frequencySlotContent: FrequencySlotContent {
+        if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited {
+            .range
+        } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .thirdOctave {
+            .thirdOctave
+        } else if signalSettings.signalType == .sweep {
+            .duration
+        } else {
+            .frequency
+        }
+    }
+
+    /// Full-range noise doesn't use the frequency-like slot at all — frequency doesn't mean
+    /// anything to full-range Pink/White. Every other signal type/sub-mode does.
+    private var frequencySlotVisible: Bool {
+        !(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .fullRange)
+    }
+
+    /// The one source of truth for whether the manual-range Low/High fields should show —
+    /// read by both the opacity and disabled gates below, instead of writing the same
+    /// boolean expression out twice inline.
+    private var manualRangeVisible: Bool {
+        isNoiseSignalType
+            && activeNoiseDraft.wrappedValue.family == .bandLimited
+            && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual
+    }
+
     var body: some View {
         @Bindable var signalSettings = signalSettings
         VStack(spacing: 16) {
@@ -291,15 +370,15 @@ struct ContentView: View {
                     // same control, not three near-duplicates stacked invisibly on top of
                     // each other.
                     frequencyOrRangeControl
-                        .opacity(frequencyOrRangeControlVisible ? 1 : 0)
-                        .disabled(!frequencyOrRangeControlVisible)
+                        .opacity(frequencySlotVisible ? 1 : 0)
+                        .disabled(!frequencySlotVisible)
 
                     // Band-limited's manual low/high fields get their own reserved slot right
                     // below, since they need to appear alongside the Range picker above (not
                     // instead of it) when Manual is selected.
                     manualRangeFields
-                        .opacity(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual ? 1 : 0)
-                        .disabled(!(isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited && activeNoiseDraft.wrappedValue.bandLimitedSelection == .manual))
+                        .opacity(manualRangeVisible ? 1 : 0)
+                        .disabled(!manualRangeVisible)
 
                     levelControl
                 }
@@ -394,27 +473,15 @@ struct ContentView: View {
     /// The one shared slot for Sine's frequency field, noise Band-limited's "Range" picker,
     /// and noise 1/3-Octave's band field (shared by Pink and White alike, via
     /// `activeNoiseDraft`) — only one of the three is ever mounted at a time, in the exact
-    /// same VStack position, rather than three parallel reserved rows.
+    /// same VStack position, rather than three parallel reserved rows. Switches on
+    /// `frequencySlotContent` directly rather than re-deriving the dispatch condition here.
     @ViewBuilder
     private var frequencyOrRangeControl: some View {
-        if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .bandLimited {
-            rangeControl
-        } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .thirdOctave {
-            thirdOctaveFrequencyControl
-        } else if signalSettings.signalType == .sweep {
-            durationControl
-        } else {
-            frequencyControl
-        }
-    }
-
-    private var frequencyOrRangeControlVisible: Bool {
-        switch signalSettings.signalType {
-        case .sine: true
-        case .pink, .white:
-            activeNoiseDraft.wrappedValue.family == .bandLimited || activeNoiseDraft.wrappedValue.family == .thirdOctave
-        case .sweep: true
-        case .square: true
+        switch frequencySlotContent {
+        case .range: rangeControl
+        case .thirdOctave: thirdOctaveFrequencyControl
+        case .duration: durationControl
+        case .frequency: frequencyControl
         }
     }
 
@@ -741,33 +808,19 @@ struct ContentView: View {
     }
 
     private func commitManualLowHz() {
-        let newLow = min(max(manualLowHzDraft, 20), activeNoiseDraft.wrappedValue.manualHighHz - 1)
-        activeNoiseDraft.wrappedValue.manualLowHz = newLow
-        manualLowHzDraft = newLow
+        manualLowHzDraft = activeNoiseDraft.wrappedValue.commitManualLow(manualLowHzDraft)
     }
 
     private func commitManualHighHz() {
-        let newHigh = max(min(manualHighHzDraft, 20000), activeNoiseDraft.wrappedValue.manualLowHz + 1)
-        activeNoiseDraft.wrappedValue.manualHighHz = newHigh
-        manualHighHzDraft = newHigh
+        manualHighHzDraft = activeNoiseDraft.wrappedValue.commitManualHigh(manualHighHzDraft)
     }
 
     private func stepThirdOctaveBand(_ direction: Int) {
-        let currentHz = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
-        let newHz = ThirdOctaveBands.step(from: currentHz, direction: direction)
-        activeNoiseDraft.wrappedValue.thirdOctaveBandIndex =
-            ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: newHz) ?? activeNoiseDraft.wrappedValue.thirdOctaveBandIndex
+        _ = activeNoiseDraft.wrappedValue.steppedThirdOctaveBand(direction: direction)
     }
 
-    /// Clamps and snaps a typed `thirdOctaveHzDraft` value to the nearest ISO 266 band on
-    /// commit (Return/blur) — `direction: 0` reuses `ThirdOctaveBands.step`'s existing
-    /// nearest-index search rather than duplicating it.
     private func commitThirdOctaveDraft() {
-        let clamped = min(max(thirdOctaveHzDraft, 20), 20000)
-        let snapped = ThirdOctaveBands.step(from: clamped, direction: 0)
-        activeNoiseDraft.wrappedValue.thirdOctaveBandIndex =
-            ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: snapped) ?? activeNoiseDraft.wrappedValue.thirdOctaveBandIndex
-        thirdOctaveHzDraft = snapped
+        thirdOctaveHzDraft = activeNoiseDraft.wrappedValue.commitThirdOctaveBand(fromTypedHz: thirdOctaveHzDraft)
     }
 
     private func adjustLevel(_ direction: Int) {
