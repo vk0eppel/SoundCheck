@@ -876,37 +876,8 @@ private struct WindowAccessor: NSViewRepresentable {
     let alwaysOnTop: Bool
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            // Without this, AppKit auto-focuses the first key-capable control (the
-            // frequency field) as soon as the window becomes key, which swallows the
-            // spacebar as a typed character instead of triggering the ON/OFF shortcut.
-            // initialFirstResponder only governs the *next* time the window becomes
-            // key, so if it's already key by now, force the current first responder
-            // away explicitly -- but if it isn't key yet, wait for
-            // didBecomeKeyNotification instead of calling makeFirstResponder
-            // immediately: calling it before the window is actually key triggers a
-            // synchronous handoff to a lower-QoS AppKit input-system thread, a
-            // priority-inversion Xcode's Thread Performance Checker flags at runtime.
-            // One-shot (removes itself after firing once) and only set up here in
-            // makeNSView, not updateNSView, so it doesn't keep stealing focus from
-            // the user later.
-            if let window = view.window {
-                window.initialFirstResponder = window.contentView
-                if window.isKeyWindow {
-                    window.makeFirstResponder(window.contentView)
-                } else {
-                    var observer: NSObjectProtocol?
-                    observer = NotificationCenter.default.addObserver(
-                        forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
-                    ) { _ in
-                        window.makeFirstResponder(window.contentView)
-                        if let observer { NotificationCenter.default.removeObserver(observer) }
-                    }
-                }
-            }
-            configure(view)
-        }
+        let view = FocusSinkView()
+        DispatchQueue.main.async { configure(view) }
         return view
     }
 
@@ -917,6 +888,58 @@ private struct WindowAccessor: NSViewRepresentable {
     private func configure(_ view: NSView) {
         guard let window = view.window else { return }
         window.level = alwaysOnTop ? .floating : .normal
+    }
+}
+
+// Without this, AppKit auto-focuses the first key-capable control (the frequency
+// field) as soon as the window becomes key, which swallows the spacebar as a typed
+// character instead of triggering the ON/OFF shortcut. Forcibly moving focus away
+// *after* the field has it is not an option: resigning an active text field tears
+// down its NSTextInputContext, which synchronously waits on AppKit's Default-QoS
+// input-system thread -- from the user-interactive main thread that's a priority
+// inversion the Thread Performance Checker flags, and no dispatch trick avoids it
+// (the main thread's QoS can't be lowered). So instead the field must never get
+// auto-focus in the first place: viewDidMoveToWindow runs synchronously while the
+// hierarchy is being built, before the window has ever become key, and points
+// initialFirstResponder at this view. Unlike the contentView (which refuses first
+// responder, making AppKit fall back to the frequency field), this view accepts it,
+// so AppKit focuses it directly on becoming key and no text input context ever
+// activates. Unhandled keys still bubble up the responder chain, so the spacebar
+// shortcut works exactly as when the window itself held focus.
+private final class FocusSinkView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+
+    private var didBecomeKeyObserver: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window, didBecomeKeyObserver == nil else { return }
+        window.initialFirstResponder = self
+        if window.isKeyWindow {
+            // Defensive only: at launch this view lands in the hierarchy before the
+            // window is ever key, so initialFirstResponder above does all the work.
+            window.makeFirstResponder(self)
+        } else {
+            // One-shot safety net in case something focuses the field at key time
+            // despite initialFirstResponder. If this view already holds focus, the
+            // call is an early-out no-op inside AppKit (no resign, no input-context
+            // teardown), so the normal path stays inversion-free.
+            didBecomeKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.window?.makeFirstResponder(self)
+                if let observer = self.didBecomeKeyObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let didBecomeKeyObserver {
+            NotificationCenter.default.removeObserver(didBecomeKeyObserver)
+        }
     }
 }
 #else
