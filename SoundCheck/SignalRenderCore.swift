@@ -248,12 +248,14 @@ final class PinkNoiseGenerator: SignalGenerator {
 
 // MARK: - Parameters
 
-enum GeneratorKind: Equatable, Sendable {
-    case sine
-    case pink
-    case white
-    case sweep
-    case square
+enum GeneratorKind: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
+    case sine = "SINE"
+    case pink = "PINK"
+    case white = "WHITE"
+    case sweep = "SWEEP"
+    case square = "SQUARE"
+
+    var id: String { rawValue }
 }
 
 /// A sub-mode shared by both noise-color generators (Pink and White), not a `GeneratorKind`

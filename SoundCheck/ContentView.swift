@@ -14,26 +14,6 @@ import SwiftUI
 import AppKit
 #endif
 
-enum SignalType: String, CaseIterable, Identifiable, Codable {
-    case sine = "SINE"
-    case pink = "PINK"
-    case white = "WHITE"
-    case sweep = "SWEEP"
-    case square = "SQUARE"
-
-    var id: String { rawValue }
-
-    var generatorKind: GeneratorKind {
-        switch self {
-        case .sine: .sine
-        case .pink: .pink
-        case .white: .white
-        case .sweep: .sweep
-        case .square: .square
-        }
-    }
-}
-
 /// Bridges `NoiseMode`'s associated-value cases to something SwiftUI's segmented/menu
 /// pickers can drive, and back — one instance per noise color (Pink and White each hold
 /// their own in `ContentView`, so each color's sub-mode selection persists independently;
@@ -105,11 +85,6 @@ private enum EditableField: Hashable {
     case frequency
     case level
     case duration
-}
-
-struct ChannelState: Equatable {
-    var muted = true
-    var phaseReversed = false
 }
 
 /// SoundCheck's one signature accent — a warning-lamp amber, used for the running state and
@@ -208,17 +183,14 @@ private extension View {
 #if os(macOS)
 struct ContentView: View {
     @State private var deviceCatalog = AudioDeviceCatalog()
-    @State private var engineController = AudioEngineController()
-    @State private var settingsStore = SettingsStore()
+    @State private var engineController: AudioEngineController
+    @State private var settingsStore: SettingsStore
+    @State private var signalSettings: SignalSettings
 
-    @State private var signalType: SignalType = .sine
-    @State private var isRunning = false
     @State private var alwaysOnTop = false
-    @State private var frequencyHz: Double = 1000
-    @State private var levelDbfs: Double = -20
     // Committed sub-mode selection, one instance per noise color so Pink's and White's
     // selections persist independently (see `NoiseModeDraft`'s doc comment). Which one is
-    // "active" is derived from `signalType` via `activeNoiseDraft` below.
+    // "active" is derived from `signalSettings.signalType` via `activeNoiseDraft` below.
     @State private var pinkDraft = NoiseModeDraft()
     @State private var whiteDraft = NoiseModeDraft()
     // Transient per-keystroke draft text, shared (not duplicated per color) since only one
@@ -239,7 +211,6 @@ struct ContentView: View {
     // `manualLowHzDraft`/`manualHighHzDraft` above.
     @State private var thirdOctaveHzDraft: Double = 1000
     @FocusState private var thirdOctaveFieldFocused: Bool
-    @State private var sweepDurationSeconds: Double = 10
     // Frequency/Level/Duration apply live per keystroke (no commit-on-blur step, unlike
     // the manual-range/1/3-octave fields above), but still need focus tracking: without
     // it, pressing Return has nothing to resign, and the field keeps first-responder
@@ -248,47 +219,51 @@ struct ContentView: View {
     // manually clicks elsewhere.
     @FocusState private var editableFieldFocus: EditableField?
     @State private var selectedDeviceUID: String?
-    @State private var channels: [ChannelState] = []
     @State private var showsDeviceDisconnectedAlert = false
+
+    /// `signalSettings` is constructed here (not with a plain default expression) because it
+    /// needs references to `engineController.renderCore` and `settingsStore` — both
+    /// constructed first, then handed to `SignalSettings` as injected dependencies (see
+    /// issue #31).
+    init() {
+        let settingsStore = SettingsStore()
+        let engineController = AudioEngineController()
+        _settingsStore = State(initialValue: settingsStore)
+        _engineController = State(initialValue: engineController)
+        _signalSettings = State(initialValue: SignalSettings(renderCore: engineController.renderCore, settingsStore: settingsStore))
+    }
 
     /// Pink and White are the two "noise-family" signal types -- both carry a `NoiseMode`
     /// sub-selection and share the mode-picker/range/manual-field views.
     private var isNoiseSignalType: Bool {
-        signalType == .pink || signalType == .white
+        signalSettings.signalType == .pink || signalSettings.signalType == .white
     }
 
-    /// Whichever of `pinkDraft`/`whiteDraft` corresponds to the current `signalType` --
-    /// both noise-family signal types share the mode-picker/range/manual-field views by
+    /// Whichever of `pinkDraft`/`whiteDraft` corresponds to the current `signalSettings.signalType`
+    /// -- both noise-family signal types share the mode-picker/range/manual-field views by
     /// binding to this, rather than duplicating those views per color.
     private var activeNoiseDraft: Binding<NoiseModeDraft> {
         Binding(
-            get: { signalType == .white ? whiteDraft : pinkDraft },
+            get: { signalSettings.signalType == .white ? whiteDraft : pinkDraft },
             set: { newValue in
-                if signalType == .white { whiteDraft = newValue } else { pinkDraft = newValue }
+                if signalSettings.signalType == .white { whiteDraft = newValue } else { pinkDraft = newValue }
             }
         )
     }
 
     var body: some View {
+        @Bindable var signalSettings = signalSettings
         VStack(spacing: 16) {
             PanelSection(title: "GENERATOR") {
                 VStack(spacing: 16) {
-                    Picker("", selection: $signalType) {
-                        ForEach(SignalType.allCases) { type in
+                    Picker("", selection: $signalSettings.signalType) {
+                        ForEach(GeneratorKind.allCases) { type in
                             Text(type.rawValue).tag(type)
                         }
                     }
                     .pickerStyle(.segmented)
                     .tint(.soundCheckAmber)
-                    .onChange(of: signalType) { _, newValue in
-                        // ADR 0003: signal-type switch forces a full stop, not a crossfade.
-                        isRunning = false
-                        engineController.renderCore.updateParameters {
-                            $0.generatorKind = newValue.generatorKind
-                            $0.running = false
-                        }
-                        settingsStore.update { $0.signalType = newValue }
-
+                    .onChange(of: signalSettings.signalType) { _, _ in
                         // Resync the transient draft text to whichever color is now active --
                         // `thirdOctaveFrequencyControl`'s own `onAppear` resync (below) covers
                         // the case where it's newly mounted, but SwiftUI may preserve an
@@ -353,23 +328,11 @@ struct ContentView: View {
         .onTapGesture { dismissFieldFocus() }
         .onAppear {
             let snapshot = settingsStore.snapshot
-            signalType = snapshot.signalType
-            frequencyHz = snapshot.frequencyHz
-            levelDbfs = snapshot.levelDbfs
             pinkDraft = NoiseModeDraft(resolving: snapshot.pinkNoiseMode)
             whiteDraft = NoiseModeDraft(resolving: snapshot.whiteNoiseMode)
             manualLowHzDraft = activeNoiseDraft.wrappedValue.manualLowHz
             manualHighHzDraft = activeNoiseDraft.wrappedValue.manualHighHz
             thirdOctaveHzDraft = ThirdOctaveBands.centerFrequenciesHz[activeNoiseDraft.wrappedValue.thirdOctaveBandIndex]
-            sweepDurationSeconds = snapshot.sweepDurationSeconds
-            engineController.renderCore.updateParameters {
-                $0.generatorKind = snapshot.signalType.generatorKind
-                $0.frequencyHz = snapshot.frequencyHz
-                $0.levelDbfs = snapshot.levelDbfs
-                $0.pinkNoiseMode = snapshot.pinkNoiseMode
-                $0.whiteNoiseMode = snapshot.whiteNoiseMode
-                $0.sweepDurationSeconds = snapshot.sweepDurationSeconds
-            }
 
             if let savedUID = snapshot.selectedDeviceUID, deviceCatalog.devices.contains(where: { $0.uid == savedUID }) {
                 selectedDeviceUID = savedUID
@@ -383,40 +346,13 @@ struct ContentView: View {
             settingsStore.update { $0.selectedDeviceUID = newValue }
         }
         .onChange(of: deviceCatalog.devices) { _, _ in handleDeviceListChanged() }
-        .onChange(of: frequencyHz) { _, newValue in
-            engineController.renderCore.updateParameters { $0.frequencyHz = newValue }
-            settingsStore.update { $0.frequencyHz = newValue }
-        }
-        .onChange(of: levelDbfs) { _, newValue in
-            engineController.renderCore.updateParameters { $0.levelDbfs = newValue }
-            settingsStore.update { $0.levelDbfs = newValue }
-        }
         .onChange(of: pinkDraft.resolved) { _, newValue in
             // Applies live, same as frequency/level — only a signal-*type* switch
             // forces a full stop (ADR 0003), not a change within a noise color's sub-modes.
-            engineController.renderCore.updateParameters { $0.pinkNoiseMode = newValue }
-            settingsStore.update { $0.pinkNoiseMode = newValue }
+            signalSettings.pinkNoiseMode = newValue
         }
         .onChange(of: whiteDraft.resolved) { _, newValue in
-            engineController.renderCore.updateParameters { $0.whiteNoiseMode = newValue }
-            settingsStore.update { $0.whiteNoiseMode = newValue }
-        }
-        .onChange(of: sweepDurationSeconds) { _, newValue in
-            engineController.renderCore.updateParameters { $0.sweepDurationSeconds = newValue }
-            settingsStore.update { $0.sweepDurationSeconds = newValue }
-        }
-        .onChange(of: channels) { _, newValue in
-            engineController.renderCore.updateParameters {
-                $0.channelMuted = newValue.map(\.muted)
-                $0.channelPhaseReversed = newValue.map(\.phaseReversed)
-            }
-            if let selectedDeviceUID {
-                settingsStore.update {
-                    $0.channelStatesByDeviceUID[selectedDeviceUID] = newValue.map {
-                        PersistedChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed)
-                    }
-                }
-            }
+            signalSettings.whiteNoiseMode = newValue
         }
         .background(WindowAccessor(alwaysOnTop: alwaysOnTop))
         .alert("Output Device Disconnected", isPresented: $showsDeviceDisconnectedAlert) {
@@ -428,15 +364,14 @@ struct ContentView: View {
 
     private var onOffButton: some View {
         Button {
-            isRunning.toggle()
-            engineController.renderCore.updateParameters { $0.running = isRunning }
+            signalSettings.isRunning.toggle()
         } label: {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(isRunning ? Color.soundCheckAmber : Color.black.opacity(0.25))
+                    .fill(signalSettings.isRunning ? Color.soundCheckAmber : Color.black.opacity(0.25))
                     .frame(width: 10, height: 10)
-                    .shadow(color: isRunning ? .soundCheckAmber : .clear, radius: 6)
-                Text(isRunning ? "ON" : "OFF")
+                    .shadow(color: signalSettings.isRunning ? .soundCheckAmber : .clear, radius: 6)
+                Text(signalSettings.isRunning ? "ON" : "OFF")
                     .font(.title2.weight(.bold))
                     .tracking(3)
             }
@@ -445,11 +380,11 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(isRunning ? Color.soundCheckAmber.opacity(0.22) : Color.secondary.opacity(0.15))
-        .foregroundStyle(isRunning ? Color.soundCheckAmber : .primary)
+        .background(signalSettings.isRunning ? Color.soundCheckAmber.opacity(0.22) : Color.secondary.opacity(0.15))
+        .foregroundStyle(signalSettings.isRunning ? Color.soundCheckAmber : .primary)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(isRunning ? Color.soundCheckAmber.opacity(0.6) : Color.clear, lineWidth: 1)
+                .strokeBorder(signalSettings.isRunning ? Color.soundCheckAmber.opacity(0.6) : Color.clear, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .keyboardShortcut(.space, modifiers: [])
@@ -466,7 +401,7 @@ struct ContentView: View {
             rangeControl
         } else if isNoiseSignalType && activeNoiseDraft.wrappedValue.family == .thirdOctave {
             thirdOctaveFrequencyControl
-        } else if signalType == .sweep {
+        } else if signalSettings.signalType == .sweep {
             durationControl
         } else {
             frequencyControl
@@ -474,7 +409,7 @@ struct ContentView: View {
     }
 
     private var frequencyOrRangeControlVisible: Bool {
-        switch signalType {
+        switch signalSettings.signalType {
         case .sine: true
         case .pink, .white:
             activeNoiseDraft.wrappedValue.family == .bandLimited || activeNoiseDraft.wrappedValue.family == .thirdOctave
@@ -484,17 +419,18 @@ struct ContentView: View {
     }
 
     private var frequencyControl: some View {
-        HStack {
+        @Bindable var signalSettings = signalSettings
+        return HStack {
             Text("Frequency")
 
-            TextField("Hz", value: $frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
+            TextField("Hz", value: $signalSettings.frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .lcdFieldStyle()
                 .frame(width: 80)
                 .focused($editableFieldFocus, equals: .frequency)
-                .onChange(of: frequencyHz) { _, newValue in
-                    frequencyHz = min(max(newValue, 20), 20000)
+                .onChange(of: signalSettings.frequencyHz) { _, newValue in
+                    signalSettings.frequencyHz = min(max(newValue, 20), 20000)
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("Hz")
@@ -664,17 +600,18 @@ struct ContentView: View {
     /// keyboard-shortcut collision with the always-visible Level stepper, matching this
     /// slot's existing left/right convention from Frequency's prev/next chevrons.
     private var durationControl: some View {
-        HStack {
+        @Bindable var signalSettings = signalSettings
+        return HStack {
             Text("Duration")
 
-            TextField("s", value: $sweepDurationSeconds, format: .number.grouping(.never).precision(.fractionLength(0...2)))
+            TextField("s", value: $signalSettings.sweepDurationSeconds, format: .number.grouping(.never).precision(.fractionLength(0...2)))
                 .font(.system(.body, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .lcdFieldStyle()
                 .frame(width: 70)
                 .focused($editableFieldFocus, equals: .duration)
-                .onChange(of: sweepDurationSeconds) { _, newValue in
-                    sweepDurationSeconds = min(max(newValue, 1), 60)
+                .onChange(of: signalSettings.sweepDurationSeconds) { _, newValue in
+                    signalSettings.sweepDurationSeconds = min(max(newValue, 1), 60)
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("s")
@@ -704,17 +641,18 @@ struct ContentView: View {
     }
 
     private var levelControl: some View {
-        HStack {
+        @Bindable var signalSettings = signalSettings
+        return HStack {
             Text("Level")
 
-            TextField("dBFS", value: $levelDbfs, format: .number.precision(.fractionLength(0...1)))
+            TextField("dBFS", value: $signalSettings.levelDbfs, format: .number.precision(.fractionLength(0...1)))
                 .font(.system(.body, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .lcdFieldStyle()
                 .frame(width: 70)
                 .focused($editableFieldFocus, equals: .level)
-                .onChange(of: levelDbfs) { _, newValue in
-                    levelDbfs = min(max(newValue, -99), 0)
+                .onChange(of: signalSettings.levelDbfs) { _, newValue in
+                    signalSettings.levelDbfs = min(max(newValue, -99), 0)
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("dBFS")
@@ -758,20 +696,21 @@ struct ContentView: View {
     }
 
     private var channelRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        @Bindable var signalSettings = signalSettings
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
-                ForEach(channels.indices, id: \.self) { index in
+                ForEach(signalSettings.channels.indices, id: \.self) { index in
                     VStack(spacing: 6) {
                         Text("CH \(index + 1)")
                             .font(.caption2.weight(.semibold))
                             .tracking(1)
                             .foregroundStyle(.secondary)
-                        Toggle(isOn: $channels[index].muted) {
+                        Toggle(isOn: $signalSettings.channels[index].muted) {
                             Text("Mute")
                         }
                         .toggleStyle(SolidToggleStyle(color: .red))
 
-                        Toggle(isOn: $channels[index].phaseReversed) {
+                        Toggle(isOn: $signalSettings.channels[index].phaseReversed) {
                             Text("Ø")
                         }
                         .toggleStyle(SolidToggleStyle(color: .soundCheckAmber))
@@ -798,7 +737,7 @@ struct ContentView: View {
     }
 
     private func stepFrequency(_ direction: Int) {
-        frequencyHz = ThirdOctaveBands.step(from: frequencyHz, direction: direction)
+        signalSettings.frequencyHz = ThirdOctaveBands.step(from: signalSettings.frequencyHz, direction: direction)
     }
 
     private func commitManualLowHz() {
@@ -832,11 +771,11 @@ struct ContentView: View {
     }
 
     private func adjustLevel(_ direction: Int) {
-        levelDbfs = min(max(levelDbfs + Double(direction), -99), 0)
+        signalSettings.levelDbfs = min(max(signalSettings.levelDbfs + Double(direction), -99), 0)
     }
 
     private func adjustSweepDuration(_ direction: Int) {
-        sweepDurationSeconds = min(max(sweepDurationSeconds + Double(direction), 1), 60)
+        signalSettings.sweepDurationSeconds = min(max(signalSettings.sweepDurationSeconds + Double(direction), 1), 60)
     }
 
     /// Clicking a non-control area (panel background, labels) doesn't resign a focused
@@ -853,20 +792,20 @@ struct ContentView: View {
     private func selectDeviceIfNeeded() {
         guard let device = selectedDevice else { return }
         engineController.selectDevice(device)
+        signalSettings.deviceDidChange(to: device.uid)
         // Every channel is forced muted on every device switch, per ADR 0001 — even for a
         // previously-used device whose saved state had a channel unmuted. Only phase-reverse
         // state is restored from what was saved.
         let statesForSwitch = settingsStore.channelStatesForDeviceSwitch(forDeviceUID: device.uid, channelCount: device.outputChannelCount)
-        channels = statesForSwitch.map { ChannelState(muted: $0.muted, phaseReversed: $0.phaseReversed) }
+        signalSettings.channels = statesForSwitch
     }
 
     private func handleDeviceListChanged() {
         guard let selectedDeviceUID, !deviceCatalog.devices.contains(where: { $0.uid == selectedDeviceUID }) else {
             return
         }
-        if isRunning {
-            isRunning = false
-            engineController.renderCore.updateParameters { $0.running = false }
+        if signalSettings.isRunning {
+            signalSettings.isRunning = false
             showsDeviceDisconnectedAlert = true
         }
         self.selectedDeviceUID = nil

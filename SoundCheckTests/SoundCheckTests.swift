@@ -46,8 +46,8 @@ struct SoundCheckTests {
             $0.selectedDeviceUID = "device-uid-1"
             $0.pinkNoiseMode = .bandLimited(.preset200HzTo1kHz)
             $0.channelStatesByDeviceUID["device-uid-1"] = [
-                PersistedChannelState(muted: false, phaseReversed: true),
-                PersistedChannelState(muted: true, phaseReversed: false),
+                Channel(muted: false, phaseReversed: true),
+                Channel(muted: true, phaseReversed: false),
             ]
         }
 
@@ -80,8 +80,8 @@ struct SoundCheckTests {
         let store = SettingsStore(defaults: defaults)
         store.update {
             $0.channelStatesByDeviceUID["device-uid-1"] = [
-                PersistedChannelState(muted: false, phaseReversed: true),
-                PersistedChannelState(muted: false, phaseReversed: false),
+                Channel(muted: false, phaseReversed: true),
+                Channel(muted: false, phaseReversed: false),
             ]
         }
 
@@ -92,6 +92,122 @@ struct SoundCheckTests {
 
         #expect(states.allSatisfy { $0.muted })
         #expect(states.map(\.phaseReversed) == [true, false])
+    }
+
+    @MainActor
+    private func makeSignalSettings() throws -> (
+        settings: SignalSettings, renderCore: SignalRenderCore, store: SettingsStore, suiteName: String
+    ) {
+        let suiteName = "SignalSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let store = SettingsStore(defaults: defaults)
+        let renderCore = SignalRenderCore()
+        let settings = SignalSettings(renderCore: renderCore, settingsStore: store)
+        return (settings, renderCore, store, suiteName)
+    }
+
+    @MainActor
+    @Test func signalSettingsSeedsRenderCoreFromExistingSnapshotOnInit() async throws {
+        let suiteName = "SignalSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = SettingsStore(defaults: defaults)
+        store.update {
+            $0.signalType = .pink
+            $0.frequencyHz = 630
+            $0.levelDbfs = -12.5
+            $0.pinkNoiseMode = .bandLimited(.preset200HzTo1kHz)
+            $0.sweepDurationSeconds = 5
+        }
+
+        let renderCore = SignalRenderCore()
+        let settings = SignalSettings(renderCore: renderCore, settingsStore: store)
+
+        #expect(settings.signalType == .pink)
+        #expect(settings.frequencyHz == 630)
+        #expect(settings.levelDbfs == -12.5)
+        #expect(settings.pinkNoiseMode == .bandLimited(.preset200HzTo1kHz))
+        #expect(settings.sweepDurationSeconds == 5)
+        #expect(renderCore.parameters.generatorKind == .pink)
+        #expect(renderCore.parameters.frequencyHz == 630)
+        #expect(renderCore.parameters.levelDbfs == -12.5)
+        #expect(renderCore.parameters.pinkNoiseMode == .bandLimited(.preset200HzTo1kHz))
+        #expect(renderCore.parameters.sweepDurationSeconds == 5)
+    }
+
+    @MainActor
+    @Test func signalSettingsFrequencyLevelAndDurationLandInBothStores() async throws {
+        let (settings, renderCore, store, suiteName) = try makeSignalSettings()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+
+        settings.frequencyHz = 250
+        settings.levelDbfs = -6
+        settings.sweepDurationSeconds = 20
+
+        #expect(renderCore.parameters.frequencyHz == 250)
+        #expect(store.snapshot.frequencyHz == 250)
+        #expect(renderCore.parameters.levelDbfs == -6)
+        #expect(store.snapshot.levelDbfs == -6)
+        #expect(renderCore.parameters.sweepDurationSeconds == 20)
+        #expect(store.snapshot.sweepDurationSeconds == 20)
+    }
+
+    @MainActor
+    @Test func signalSettingsNoiseModesLandInBothStores() async throws {
+        let (settings, renderCore, store, suiteName) = try makeSignalSettings()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+
+        settings.pinkNoiseMode = .thirdOctave(bandIndex: 10)
+        settings.whiteNoiseMode = .bandLimited(.preset1kTo20kHz)
+
+        #expect(renderCore.parameters.pinkNoiseMode == .thirdOctave(bandIndex: 10))
+        #expect(store.snapshot.pinkNoiseMode == .thirdOctave(bandIndex: 10))
+        #expect(renderCore.parameters.whiteNoiseMode == .bandLimited(.preset1kTo20kHz))
+        #expect(store.snapshot.whiteNoiseMode == .bandLimited(.preset1kTo20kHz))
+    }
+
+    @MainActor
+    @Test func signalSettingsChannelsPersistUnderTheTrackedDeviceUID() async throws {
+        let (settings, renderCore, store, suiteName) = try makeSignalSettings()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+
+        settings.deviceDidChange(to: "device-uid-1")
+        settings.channels = [Channel(muted: false, phaseReversed: true), Channel(muted: true, phaseReversed: false)]
+
+        #expect(renderCore.parameters.channelMuted == [false, true])
+        #expect(renderCore.parameters.channelPhaseReversed == [true, false])
+        #expect(
+            store.snapshot.channelStatesByDeviceUID["device-uid-1"] == [
+                Channel(muted: false, phaseReversed: true),
+                Channel(muted: true, phaseReversed: false),
+            ])
+    }
+
+    @MainActor
+    @Test func signalSettingsIsRunningOnlyUpdatesRenderCoreNotPersistedSettings() async throws {
+        let (settings, renderCore, store, suiteName) = try makeSignalSettings()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let snapshotBefore = store.snapshot
+
+        settings.isRunning = true
+
+        #expect(renderCore.parameters.running == true)
+        #expect(store.snapshot == snapshotBefore)
+    }
+
+    @MainActor
+    @Test func signalSettingsSignalTypeSwitchForcesStopPerADR0003() async throws {
+        let (settings, renderCore, store, suiteName) = try makeSignalSettings()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        settings.isRunning = true
+
+        settings.signalType = .square
+
+        #expect(settings.isRunning == false)
+        #expect(renderCore.parameters.running == false)
+        #expect(renderCore.parameters.generatorKind == .square)
+        #expect(store.snapshot.signalType == .square)
     }
 
     @Test func rampsGainInGradually() async throws {

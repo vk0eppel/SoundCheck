@@ -12,20 +12,12 @@
 import Foundation
 import Observation
 
-struct PersistedChannelState: Codable, Equatable {
-    var muted: Bool
-    var phaseReversed: Bool
-
-    /// Every channel defaults to muted, per ADR 0001.
-    static let defaultState = PersistedChannelState(muted: true, phaseReversed: false)
-}
-
 struct SettingsSnapshot: Codable, Equatable {
-    var signalType: SignalType = .sine
+    var signalType: GeneratorKind = .sine
     var frequencyHz: Double = 1000
     var levelDbfs: Double = -20
     var selectedDeviceUID: String?
-    var channelStatesByDeviceUID: [String: [PersistedChannelState]] = [:]
+    var channelStatesByDeviceUID: [String: [Channel]] = [:]
     var pinkNoiseMode: NoiseMode = .fullRange
     var whiteNoiseMode: NoiseMode = .fullRange
     var sweepDurationSeconds: Double = 10
@@ -60,7 +52,7 @@ final class SettingsStore {
 
     /// Channel states for the given device, muted-by-default (ADR 0001) if none are saved
     /// yet or the saved count doesn't match the device's current channel count.
-    func channelStates(forDeviceUID uid: String, channelCount: Int) -> [PersistedChannelState] {
+    func channelStates(forDeviceUID uid: String, channelCount: Int) -> [Channel] {
         if let saved = snapshot.channelStatesByDeviceUID[uid], saved.count == channelCount {
             return saved
         }
@@ -71,9 +63,9 @@ final class SettingsStore {
     /// always forces mute on — ADR 0001 requires every channel muted "on every device switch,"
     /// not just for previously-unseen devices, so a previously-unmuted channel must not come
     /// back unmuted just because its device was seen before.
-    func channelStatesForDeviceSwitch(forDeviceUID uid: String, channelCount: Int) -> [PersistedChannelState] {
+    func channelStatesForDeviceSwitch(forDeviceUID uid: String, channelCount: Int) -> [Channel] {
         channelStates(forDeviceUID: uid, channelCount: channelCount).map {
-            PersistedChannelState(muted: true, phaseReversed: $0.phaseReversed)
+            Channel(muted: true, phaseReversed: $0.phaseReversed)
         }
     }
 

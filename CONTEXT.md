@@ -5,7 +5,7 @@ A signal generator utility for sound engineers, techs, and hifi enthusiasts to t
 ## Language
 
 **Channel**:
-One output of the currently selected Core Audio device, independent of the device's stereo/multichannel layout. The signal is routed to every channel of the device simultaneously; each channel has its own independent mute and phase-reverse state.
+One output of the currently selected Core Audio device, independent of the device's stereo/multichannel layout. The signal is routed to every channel of the device simultaneously; each channel has its own independent mute and phase-reverse state. Modeled as one type, `Channel` (`SoundCheck/Channel.swift`), used directly by both live UI state and persistence — no separate UI-facing/persisted structs translated by hand.
 _Avoid_: Output, port
 
 **Muted (channel default)**:
