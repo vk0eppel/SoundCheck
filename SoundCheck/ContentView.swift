@@ -453,6 +453,9 @@ struct ContentView: View {
         // The lighter console chassis the dark GENERATOR/OUTPUT wells recess into, mirroring
         // FreqTrace's meter-panel-on-surfaceRaised layering (ADR 0005).
         .background(theme.surfaceRaised)
+        // Behind the opaque chassis fill above: the number-key Mute shortcuts, disabled while a
+        // numeric field is focused so it keeps the typed digit instead.
+        .background { channelMuteShortcuts.disabled(anyFieldFocused) }
         .environment(\.theme, theme)
         .preferredColorScheme(appearanceSettings.mode == .dark ? .dark : .light)
         .contentShape(Rectangle())
@@ -836,6 +839,7 @@ struct ContentView: View {
                             Text("Mute")
                         }
                         .toggleStyle(SolidToggleStyle(color: theme.danger))
+                        .help(muteShortcutHelp(forChannel: index))
 
                         Toggle(isOn: $signalSettings.channels[index].phaseReversed) {
                             Text("Ø")
@@ -854,6 +858,47 @@ struct ContentView: View {
             }
         }
         .frame(height: 100)
+    }
+
+    /// Invisible buttons backing the number-key shortcuts that toggle the first ten channels'
+    /// Mute (channel 1 → "1" … channel 9 → "9", channel 10 → "0"; channels past ten have no
+    /// single-key shortcut). Kept separate from the visible Mute toggles so those stay
+    /// mouse-clickable, and gated by `anyFieldFocused` so typing a digit into a numeric field
+    /// isn't stolen as a shortcut — a disabled button's `keyboardShortcut` doesn't fire. Placed
+    /// behind the opaque window background (see `body`), so they're never seen.
+    private var channelMuteShortcuts: some View {
+        @Bindable var signalSettings = signalSettings
+        return ForEach(signalSettings.channels.indices, id: \.self) { index in
+            if let key = Self.muteShortcutKey(forChannel: index) {
+                Button("") { signalSettings.channels[index].muted.toggle() }
+                    .keyboardShortcut(key, modifiers: [])
+            }
+        }
+    }
+
+    /// The single digit key that toggles a given channel's Mute — "1"–"9" for the first nine
+    /// channels, "0" for the tenth. `nil` past ten: single digits run out, and there's no
+    /// clean second key that beats just clicking.
+    private static func muteShortcutKey(forChannel index: Int) -> KeyEquivalent? {
+        switch index {
+        case 0..<9: KeyEquivalent(Character("\(index + 1)"))
+        case 9: "0"
+        default: nil
+        }
+    }
+
+    private func muteShortcutHelp(forChannel index: Int) -> String {
+        switch Self.muteShortcutKey(forChannel: index) {
+        case .some(let key): "Toggle CH \(index + 1) mute (\(key.character))"
+        case .none: "Toggle CH \(index + 1) mute"
+        }
+    }
+
+    /// True while any editable numeric field holds keyboard focus — the gate that keeps the
+    /// number-key Mute shortcuts from swallowing digits meant for Frequency/Level/Duration or
+    /// the manual-range/1-3-octave fields.
+    private var anyFieldFocused: Bool {
+        editableFieldFocus != nil || manualRangeFieldFocus != nil || thirdOctaveFieldFocused
     }
 
     private var selectedDevice: AudioDeviceInfo? {
