@@ -54,8 +54,8 @@ nonisolated enum DesignTokens {
         text: "#e8ecef",
         textDim: "#8b939c",
         textFaint: "#7a8189",
-        accent: "#ffb84d",
-        accentDim: "#8a6a3a",
+        accent: "#00c0e7",
+        accentDim: "#3d7c8c",
         danger: "#ff5a5a",
         warn: "#ffcf5c"
     )
@@ -69,8 +69,8 @@ nonisolated enum DesignTokens {
         text: "#14171b",
         textDim: "#565d66",
         textFaint: "#5c6167",
-        accent: "#8f4d00",
-        accentDim: "#e0b378",
+        accent: "#0a6c86",
+        accentDim: "#8fc9d8",
         danger: "#c62f2f",
         warn: "#6e4e00"
     )

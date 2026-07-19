@@ -212,7 +212,7 @@ private struct SolidToggleStyle: ToggleStyle {
 }
 
 /// SoundCheck's numeric-readout treatment for Frequency/Level/Duration/manual-range fields —
-/// a dark inset panel with a hairline glow echoing the ON/OFF button's amber LED
+/// a dark inset panel with a hairline glow echoing the ON/OFF button's cyan accent
 /// (`onOffButton`), since these fields are the closest thing in the design to an actual
 /// instrument's numeric display. Deliberately dark regardless of system appearance, the same
 /// way a real LCD/VFD readout's backlight doesn't turn white in a bright room — text color is
@@ -502,7 +502,7 @@ struct ContentView: View {
         } label: {
             HStack(spacing: 10) {
                 // A red tally light -- "the signal is live" -- matching FreqTrace's
-                // capture-running Stop/Start indicator; distinct from the amber "armed" outline
+                // capture-running Stop/Start indicator; distinct from the cyan "armed" outline
                 // of the idle state below (ADR 0005).
                 LEDIndicator(isLit: signalSettings.isRunning, color: theme.danger)
                 Text(signalSettings.isRunning ? "ON" : "OFF")
@@ -516,8 +516,8 @@ struct ContentView: View {
         .buttonStyle(.plain)
         // The primary run control needs presence in both appearance modes, so it doesn't lean
         // on a neutral surface fill -- in Light the neutral tokens sit too close to the white
-        // panel and the button vanishes. Instead: an amber-outlined "armed" idle state and a
-        // red-filled "live" running state (amber/red both contrast against a white *and* a dark
+        // panel and the button vanishes. Instead: a cyan-outlined "armed" idle state and a
+        // red-filled "live" running state (cyan/red both contrast against a white *and* a dark
         // panel) -- a standby->live instrument progression (ADR 0005).
         .background((signalSettings.isRunning ? theme.danger : theme.accent)
             .opacity(signalSettings.isRunning ? 0.18 : 0.10))
@@ -670,9 +670,9 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.segmented)
-        // Amber selection, same as the signal-type picker above -- FreqTrace tints every
-        // selected segment amber (its WATERFALL/RTA tabs and its 1/1..1/48 banding row alike),
-        // so one grey picker stacked under an amber one just read as inconsistent (ADR 0005).
+        // Cyan selection, same as the signal-type picker above -- FreqTrace tints every
+        // selected segment with the accent (its WATERFALL/RTA tabs and its 1/1..1/48 banding row
+        // alike), so one grey picker stacked under an accent-tinted one read as inconsistent (ADR 0005).
         .tint(theme.accent)
     }
 
@@ -834,7 +834,7 @@ struct ContentView: View {
     }
 
     /// A frequency field's LCD panel with the band dropdown built *into* it: the text field and
-    /// a borderless ▾ share one dark panel + amber border, reading as a single combo box rather
+    /// a borderless ▾ share one dark panel + cyan border, reading as a single combo box rather
     /// than a field with a detached button beside it. `field` is the caller's already-configured
     /// `TextField` (its own binding/focus/format/commit); `select` receives a picked band's Hz.
     /// The `.lcdFieldStyle()` wraps the whole HStack, so its dark fill/border/glow and forced
@@ -852,8 +852,8 @@ struct ContentView: View {
         .lcdFieldStyle()
     }
 
-    /// The borderless ▾ that lives inside `lcdComboField`'s panel — an amber chevron (echoing
-    /// the LCD's amber border) opening the ISO 266 band list. No bezel of its own, so it looks
+    /// The borderless ▾ that lives inside `lcdComboField`'s panel — a cyan chevron (echoing
+    /// the LCD's cyan border) opening the ISO 266 band list. No bezel of its own, so it looks
     /// painted onto the dark panel rather than bolted beside it.
     private func bandMenuLabel(select: @escaping (Double) -> Void) -> some View {
         Menu {
