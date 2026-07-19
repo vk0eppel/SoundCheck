@@ -3,3 +3,7 @@ DerivedData/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcuserstate
+
+# Local release artifacts (scripts/release.sh)
+build_release/
+dist/

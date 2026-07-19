@@ -1,9 +1,13 @@
 name: Release
 
+# NOTE: This produces an *unsigned* (ad-hoc) build, which hits Gatekeeper's
+# hard "cannot verify developer" block on download. Real releases are cut
+# locally and signed via `scripts/release.sh` (Apple Development identity +
+# hardened runtime), so this no longer auto-runs on tag push -- it's kept
+# for manual, on-demand unsigned builds only. Promote to Developer ID +
+# notarization here if public friction-free distribution is ever needed.
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
 
 jobs:
   build-and-release:
