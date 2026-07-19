@@ -554,20 +554,18 @@ struct ContentView: View {
         return HStack {
             Text("Frequency")
 
-            TextField("Hz", value: $signalSettings.frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
-                .font(.system(.body, design: .monospaced))
-                .multilineTextAlignment(.center)
-                .lcdFieldStyle()
-                .frame(width: 80)
-                .focused($editableFieldFocus, equals: .frequency)
-                .onChange(of: signalSettings.frequencyHz) { _, newValue in
-                    signalSettings.frequencyHz = min(max(newValue, 20), 20000)
-                }
-                .onSubmit { editableFieldFocus = nil }
-
-            // Dropdown half of the combo box: picking a band sets the value live (the clamp
-            // above already keeps it in range).
-            bandDropdown { signalSettings.frequencyHz = $0 }
+            // Combo box: the LCD field and its band dropdown share one dark panel. Picking a
+            // band sets the value live (the clamp below already keeps it in range).
+            lcdComboField(width: 96, select: { signalSettings.frequencyHz = $0 }) {
+                TextField("Hz", value: $signalSettings.frequencyHz, format: .number.grouping(.never).precision(.fractionLength(0...1)))
+                    .font(.system(.body, design: .monospaced))
+                    .multilineTextAlignment(.center)
+                    .focused($editableFieldFocus, equals: .frequency)
+                    .onChange(of: signalSettings.frequencyHz) { _, newValue in
+                        signalSettings.frequencyHz = min(max(newValue, 20), 20000)
+                    }
+                    .onSubmit { editableFieldFocus = nil }
+            }
 
             Text("Hz")
                 .foregroundStyle(theme.textDim)
@@ -606,24 +604,22 @@ struct ContentView: View {
         HStack {
             Text("Frequency")
 
-            TextField("Hz", value: $thirdOctaveHzDraft, format: .number.grouping(.never).precision(.fractionLength(0...1)))
-                .font(.system(.body, design: .monospaced))
-                .multilineTextAlignment(.center)
-                .lcdFieldStyle()
-                .frame(width: 80)
-                .focused($thirdOctaveFieldFocused)
-                .onSubmit {
-                    commitThirdOctaveDraft()
-                    thirdOctaveFieldFocused = false
-                }
-
-            // Dropdown half of the combo box: each menu item is already an exact band, so set
-            // the committed band index directly (no snap). The `.onChange(of:thirdOctaveBandIndex)`
-            // below resyncs the draft text, and pink/whiteDraft.resolved pushes the live mode.
-            bandDropdown { hz in
+            // Combo box: each menu item is already an exact band, so set the committed band
+            // index directly (no snap). The `.onChange(of:thirdOctaveBandIndex)` below resyncs
+            // the draft text, and pink/whiteDraft.resolved pushes the live mode.
+            lcdComboField(width: 96, select: { hz in
                 if let index = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: hz) {
                     activeNoiseDraft.wrappedValue.thirdOctaveBandIndex = index
                 }
+            }) {
+                TextField("Hz", value: $thirdOctaveHzDraft, format: .number.grouping(.never).precision(.fractionLength(0...1)))
+                    .font(.system(.body, design: .monospaced))
+                    .multilineTextAlignment(.center)
+                    .focused($thirdOctaveFieldFocused)
+                    .onSubmit {
+                        commitThirdOctaveDraft()
+                        thirdOctaveFieldFocused = false
+                    }
             }
 
             Text("Hz")
@@ -837,21 +833,41 @@ struct ContentView: View {
         hz.formatted(.number.grouping(.never).precision(.fractionLength(0...1))) + " Hz"
     }
 
-    /// The dropdown half of the frequency combo box: a bordered menu button (styled to match
-    /// the ‹ › steppers) listing every ISO 266 band. `select` receives the chosen band's Hz;
-    /// each caller routes it into its own value path (Sine's `frequencyHz`, or the 1/3-octave
-    /// draft's band index). Shared by `frequencyControl` and `thirdOctaveFrequencyControl`.
-    private func bandDropdown(select: @escaping (Double) -> Void) -> some View {
+    /// A frequency field's LCD panel with the band dropdown built *into* it: the text field and
+    /// a borderless ▾ share one dark panel + amber border, reading as a single combo box rather
+    /// than a field with a detached button beside it. `field` is the caller's already-configured
+    /// `TextField` (its own binding/focus/format/commit); `select` receives a picked band's Hz.
+    /// The `.lcdFieldStyle()` wraps the whole HStack, so its dark fill/border/glow and forced
+    /// light text apply to both halves at once.
+    private func lcdComboField<Field: View>(
+        width: CGFloat,
+        select: @escaping (Double) -> Void,
+        @ViewBuilder field: () -> Field
+    ) -> some View {
+        HStack(spacing: 2) {
+            field()
+            bandMenuLabel(select: select)
+        }
+        .frame(width: width)
+        .lcdFieldStyle()
+    }
+
+    /// The borderless ▾ that lives inside `lcdComboField`'s panel — an amber chevron (echoing
+    /// the LCD's amber border) opening the ISO 266 band list. No bezel of its own, so it looks
+    /// painted onto the dark panel rather than bolted beside it.
+    private func bandMenuLabel(select: @escaping (Double) -> Void) -> some View {
         Menu {
             ForEach(ThirdOctaveBands.centerFrequenciesHz, id: \.self) { hz in
                 Button(Self.bandLabel(hz)) { select(hz) }
             }
         } label: {
             Image(systemName: "chevron.down")
-                .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(theme.accent)
+                .frame(width: 14, height: 18)
+                .contentShape(Rectangle())
         }
-        .menuStyle(.button)
-        .buttonStyle(.bordered)
+        .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Pick a 1/3-octave band")
