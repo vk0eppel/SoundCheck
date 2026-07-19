@@ -61,7 +61,8 @@ No separate help view, button, or menu item. Every control that has a keyboard s
 - Range 20Hz-20kHz, free text entry, default 1000Hz.
 - Whole Hz only — typed input is rounded to the nearest integer Hz on commit. (Internal oscillator still uses full float precision; this is a display/entry rule only.) Exception: the 1/3-octave band at 31.5Hz displays as "31.5Hz", not rounded to 32 — it's the fixed ISO 266 standard label, not a typed value.
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
-- Typed free-text values don't snap to the 1/3-octave grid; arrows are the only thing that snaps.
+- A dropdown (▾ `Menu` button hugging the field, styled to match the steppers) lists all 31 ISO 266 bands for direct picking — combo-box behavior: type any value *or* pick a standard band. The same dropdown is offered on the 1/3-Octave noise band field (Pink & White), where picking sets the band index directly. Band labels use raw Hz (e.g. "1000 Hz", "31.5 Hz"), matching the field's own whole-Hz display rule.
+- Typed free-text values don't snap to the 1/3-octave grid; arrows and the dropdown are the only things that land exactly on a band.
 - Clamp to range on commit, reject non-numeric input.
 - Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is a single shared control position, not three parallel reserved rows: Pink 1/3-Octave (V2) reuses this exact Frequency control (not a separate band stepper), Pink Band-limited (V2) shows a "Range" picker in the same slot instead, and Sweep (V2) shows a duration field there — see "V2 addendum: pink noise modes" and "V2 addendum: sine sweep".
 

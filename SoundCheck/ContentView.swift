@@ -564,6 +564,11 @@ struct ContentView: View {
                     signalSettings.frequencyHz = min(max(newValue, 20), 20000)
                 }
                 .onSubmit { editableFieldFocus = nil }
+
+            // Dropdown half of the combo box: picking a band sets the value live (the clamp
+            // above already keeps it in range).
+            bandDropdown { signalSettings.frequencyHz = $0 }
+
             Text("Hz")
                 .foregroundStyle(theme.textDim)
 
@@ -611,6 +616,16 @@ struct ContentView: View {
                     commitThirdOctaveDraft()
                     thirdOctaveFieldFocused = false
                 }
+
+            // Dropdown half of the combo box: each menu item is already an exact band, so set
+            // the committed band index directly (no snap). The `.onChange(of:thirdOctaveBandIndex)`
+            // below resyncs the draft text, and pink/whiteDraft.resolved pushes the live mode.
+            bandDropdown { hz in
+                if let index = ThirdOctaveBands.centerFrequenciesHz.firstIndex(of: hz) {
+                    activeNoiseDraft.wrappedValue.thirdOctaveBandIndex = index
+                }
+            }
+
             Text("Hz")
                 .foregroundStyle(theme.textDim)
 
@@ -815,6 +830,32 @@ struct ContentView: View {
     /// Shared tap-target size for every stepper button (frequency prev/next, level +/-)
     /// so they read as one consistent control family.
     private static let stepperButtonSize: CGFloat = 16
+
+    /// A band label matching the frequency field's own display style (no grouping, the 31.5Hz
+    /// decimal exception, else whole Hz) — e.g. "1000 Hz", "31.5 Hz", "20000 Hz".
+    private static func bandLabel(_ hz: Double) -> String {
+        hz.formatted(.number.grouping(.never).precision(.fractionLength(0...1))) + " Hz"
+    }
+
+    /// The dropdown half of the frequency combo box: a bordered menu button (styled to match
+    /// the ‹ › steppers) listing every ISO 266 band. `select` receives the chosen band's Hz;
+    /// each caller routes it into its own value path (Sine's `frequencyHz`, or the 1/3-octave
+    /// draft's band index). Shared by `frequencyControl` and `thirdOctaveFrequencyControl`.
+    private func bandDropdown(select: @escaping (Double) -> Void) -> some View {
+        Menu {
+            ForEach(ThirdOctaveBands.centerFrequenciesHz, id: \.self) { hz in
+                Button(Self.bandLabel(hz)) { select(hz) }
+            }
+        } label: {
+            Image(systemName: "chevron.down")
+                .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Pick a 1/3-octave band")
+    }
 
     private var devicePicker: some View {
         Picker("Output Device", selection: $selectedDeviceUID) {
