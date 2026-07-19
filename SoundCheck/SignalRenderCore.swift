@@ -251,11 +251,13 @@ final class PinkNoiseGenerator: SignalGenerator {
 // MARK: - Parameters
 
 enum GeneratorKind: String, CaseIterable, Identifiable, Hashable, Codable, Sendable {
+    // Declaration order drives the signal-type picker (via `allCases`); raw values key
+    // Codable persistence, so this order is presentation-only and safe to change.
     case sine = "SINE"
+    case square = "SQUARE"
     case pink = "PINK"
     case white = "WHITE"
     case sweep = "SWEEP"
-    case square = "SQUARE"
 
     var id: String { rawValue }
 }

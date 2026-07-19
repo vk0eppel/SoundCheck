@@ -127,20 +127,36 @@ private enum EditableField: Hashable {
     case duration
 }
 
-/// SoundCheck's one signature accent — a warning-lamp amber, used for the running state and
-/// its echoes (the phase toggle, the LED), the selected signal-type tab, and (as a subtle
-/// hairline glow, not a fill) the numeric-readout fields' `LCDFieldStyle`. Everything else
-/// stays semantic system color so light/dark appearance keeps following the system
-/// automatically — `soundCheckLCDPanel` is the one deliberate, narrow exception, matching
-/// the amber LED's own appearance-independent color (see `LCDFieldStyle`'s doc comment).
+/// The one deliberate carve-out from the shared `Theme` (ADR 0005): the numeric readout's
+/// backing stays dark in *both* appearance modes, the way a real instrument's LCD/VFD backlight
+/// doesn't turn white in a bright room — so it can't be `theme.bg`, which flips pale in Light
+/// mode. Everything else on the screen reads from `theme` (accent, danger, surfaces, text).
 extension Color {
-    static let soundCheckAmber = Color(red: 0.90, green: 0.58, blue: 0.10)
     static let soundCheckLCDPanel = Color(red: 0.07, green: 0.065, blue: 0.06)
+}
+
+/// A small lit indicator — one lit LED = one active state, the same console language the
+/// sibling FreqTrace project uses (ADR 0005): a running tally (`theme.danger`) or an engaged
+/// preference (`theme.accent`), shown by lighting a dot rather than flooding the whole control
+/// with color.
+private struct LEDIndicator: View {
+    @Environment(\.theme) private var theme
+    let isLit: Bool
+    var color: Color?
+
+    var body: some View {
+        let lit = color ?? theme.accent
+        Circle()
+            .fill(isLit ? lit : theme.textFaint.opacity(0.4))
+            .frame(width: 8, height: 8)
+            .shadow(color: isLit ? lit.opacity(0.8) : .clear, radius: isLit ? 5 : 0)
+    }
 }
 
 /// A titled grouping, evoking a labeled zone on an instrument's front panel — not
 /// decoration: it separates "what's being generated" from "where it's going."
 private struct PanelSection<Content: View>: View {
+    @Environment(\.theme) private var theme
     let title: String
     @ViewBuilder let content: Content
 
@@ -149,19 +165,29 @@ private struct PanelSection<Content: View>: View {
             Text(title)
                 .font(.caption2.weight(.semibold))
                 .tracking(2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
             content
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+        // A mid console plate (`surface` + `border`), matching FreqTrace's Weighting/FFT Size
+        // control modules (its `consolePlate`) -- recessed into the window's lighter
+        // `surfaceRaised` chassis. The interactive controls inside lift back up to
+        // `surfaceRaised`; the LCD readouts stay darkest (ADR 0005).
+        .background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(theme.border, lineWidth: 1)
+        )
     }
 }
 
-/// Solid fill + bold high-contrast text when on, dim outline when off — engaged/disengaged
-/// must be unmistakable at a glance for channel routing, the same "never color alone, and
-/// make the state obvious" language the ON/OFF button already uses.
+/// Solid color fill + bold white text when on, dim outline when off — engaged/disengaged
+/// must be unmistakable at a glance. Mute especially is a safety-critical state (every channel
+/// muted by default, ADR 0001), so it deliberately floods the whole control rather than using
+/// the softer lit-LED language (ADR 0005): a small dot undersells "am I muted?".
 private struct SolidToggleStyle: ToggleStyle {
+    @Environment(\.theme) private var theme
     let color: Color
 
     func makeBody(configuration: Configuration) -> some View {
@@ -176,10 +202,10 @@ private struct SolidToggleStyle: ToggleStyle {
         }
         .buttonStyle(.plain)
         .background(configuration.isOn ? color : Color.clear)
-        .foregroundStyle(configuration.isOn ? .white : .secondary)
+        .foregroundStyle(configuration.isOn ? .white : theme.textDim)
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(configuration.isOn ? Color.clear : Color.secondary.opacity(0.4), lineWidth: 1)
+                .strokeBorder(configuration.isOn ? Color.clear : theme.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
@@ -193,9 +219,14 @@ private struct SolidToggleStyle: ToggleStyle {
 /// forced light to stay legible against it in both light and dark appearance. Styling only:
 /// doesn't touch any field's commit-timing, clamping, or snapping behavior.
 private struct LCDFieldStyle: ViewModifier {
+    @Environment(\.theme) private var theme
+
     func body(content: Content) -> some View {
         content
             .textFieldStyle(.plain)
+            // Forced light text -- legible against the always-dark LCD panel in both
+            // appearance modes (theme.text flips near-black in Light mode, so it can't drive
+            // this one field).
             .foregroundStyle(Color.white.opacity(0.92))
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
@@ -208,9 +239,9 @@ private struct LCDFieldStyle: ViewModifier {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.soundCheckAmber.opacity(0.35), lineWidth: 1)
+                    .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
             )
-            .shadow(color: Color.soundCheckAmber.opacity(0.25), radius: 3)
+            .shadow(color: theme.accent.opacity(0.25), radius: 3)
     }
 }
 
@@ -227,6 +258,7 @@ struct ContentView: View {
     @State private var settingsStore: SettingsStore
     @State private var signalSettings: SignalSettings
 
+    @State private var appearanceSettings = AppearanceSettings()
     @State private var alwaysOnTop = false
     // Committed sub-mode selection, one instance per noise color so Pink's and White's
     // selections persist independently (see `NoiseModeDraft`'s doc comment). Which one is
@@ -275,6 +307,8 @@ struct ContentView: View {
 
     /// Pink and White are the two "noise-family" signal types -- both carry a `NoiseMode`
     /// sub-selection and share the mode-picker/range/manual-field views.
+    private var theme: Theme { Theme(mode: appearanceSettings.mode) }
+
     private var isNoiseSignalType: Bool {
         signalSettings.signalType == .pink || signalSettings.signalType == .white
     }
@@ -345,7 +379,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .tint(.soundCheckAmber)
+                    .tint(theme.accent)
                     .onChange(of: signalSettings.signalType) { _, _ in
                         // Resync the transient draft text to whichever color is now active --
                         // `thirdOctaveFrequencyControl`'s own `onAppear` resync (below) covers
@@ -398,8 +432,17 @@ struct ContentView: View {
             HStack {
                 Text(formatReadout)
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.textFaint)
                 Spacer()
+                Picker("", selection: $appearanceSettings.mode) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                .font(.caption)
+                .help("Dark or Light appearance")
                 Toggle("Always on Top", isOn: $alwaysOnTop)
                     .toggleStyle(.checkbox)
                     .font(.caption)
@@ -407,6 +450,11 @@ struct ContentView: View {
         }
         .padding(20)
         .frame(width: 420)
+        // The lighter console chassis the dark GENERATOR/OUTPUT wells recess into, mirroring
+        // FreqTrace's meter-panel-on-surfaceRaised layering (ADR 0005).
+        .background(theme.surfaceRaised)
+        .environment(\.theme, theme)
+        .preferredColorScheme(appearanceSettings.mode == .dark ? .dark : .light)
         .contentShape(Rectangle())
         .onTapGesture { dismissFieldFocus() }
         .onAppear {
@@ -450,10 +498,10 @@ struct ContentView: View {
             signalSettings.isRunning.toggle()
         } label: {
             HStack(spacing: 10) {
-                Circle()
-                    .fill(signalSettings.isRunning ? Color.soundCheckAmber : Color.black.opacity(0.25))
-                    .frame(width: 10, height: 10)
-                    .shadow(color: signalSettings.isRunning ? .soundCheckAmber : .clear, radius: 6)
+                // A red tally light -- "the signal is live" -- matching FreqTrace's
+                // capture-running Stop/Start indicator; distinct from the amber "armed" outline
+                // of the idle state below (ADR 0005).
+                LEDIndicator(isLit: signalSettings.isRunning, color: theme.danger)
                 Text(signalSettings.isRunning ? "ON" : "OFF")
                     .font(.title2.weight(.bold))
                     .tracking(3)
@@ -463,11 +511,17 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(signalSettings.isRunning ? Color.soundCheckAmber.opacity(0.22) : Color.secondary.opacity(0.15))
-        .foregroundStyle(signalSettings.isRunning ? Color.soundCheckAmber : .primary)
+        // The primary run control needs presence in both appearance modes, so it doesn't lean
+        // on a neutral surface fill -- in Light the neutral tokens sit too close to the white
+        // panel and the button vanishes. Instead: an amber-outlined "armed" idle state and a
+        // red-filled "live" running state (amber/red both contrast against a white *and* a dark
+        // panel) -- a standby->live instrument progression (ADR 0005).
+        .background((signalSettings.isRunning ? theme.danger : theme.accent)
+            .opacity(signalSettings.isRunning ? 0.18 : 0.10))
+        .foregroundStyle(signalSettings.isRunning ? theme.danger : theme.text)
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(signalSettings.isRunning ? Color.soundCheckAmber.opacity(0.6) : Color.clear, lineWidth: 1)
+                .strokeBorder(signalSettings.isRunning ? theme.danger : theme.accent.opacity(0.55), lineWidth: 1.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .keyboardShortcut(.space, modifiers: [])
@@ -508,7 +562,7 @@ struct ContentView: View {
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("Hz")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
 
             // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
             HStack(spacing: 4) {
@@ -555,7 +609,7 @@ struct ContentView: View {
                     thirdOctaveFieldFocused = false
                 }
             Text("Hz")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
 
             // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
             HStack(spacing: 4) {
@@ -602,11 +656,10 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.segmented)
-        // Deliberately neutral, not system blue and not `.soundCheckAmber` -- amber is
-        // reserved for the running-state LED, the selected signal-type tab, and the engaged
-        // Ø toggle only (docs/v1-spec.md's Visual design section), and this control isn't
-        // one of those three.
-        .tint(.secondary)
+        // Amber selection, same as the signal-type picker above -- FreqTrace tints every
+        // selected segment amber (its WATERFALL/RTA tabs and its 1/1..1/48 banding row alike),
+        // so one grey picker stacked under an amber one just read as inconsistent (ADR 0005).
+        .tint(theme.accent)
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
@@ -642,7 +695,7 @@ struct ContentView: View {
                     manualRangeFieldFocus = nil
                 }
             Text("–")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
             TextField("High", value: $manualHighHzDraft, format: .number.grouping(.never).precision(.fractionLength(0)))
                 .font(.system(.body, design: .monospaced))
                 .multilineTextAlignment(.center)
@@ -689,7 +742,7 @@ struct ContentView: View {
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("s")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
 
             HStack(spacing: 4) {
                 Button {
@@ -730,7 +783,7 @@ struct ContentView: View {
                 }
                 .onSubmit { editableFieldFocus = nil }
             Text("dBFS")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.textDim)
 
             // + above -, matching the up-arrow/down-arrow keyboard shortcuts below.
             VStack(spacing: 4) {
@@ -778,20 +831,25 @@ struct ContentView: View {
                         Text("CH \(index + 1)")
                             .font(.caption2.weight(.semibold))
                             .tracking(1)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.textDim)
                         Toggle(isOn: $signalSettings.channels[index].muted) {
                             Text("Mute")
                         }
-                        .toggleStyle(SolidToggleStyle(color: .red))
+                        .toggleStyle(SolidToggleStyle(color: theme.danger))
 
                         Toggle(isOn: $signalSettings.channels[index].phaseReversed) {
                             Text("Ø")
                         }
-                        .toggleStyle(SolidToggleStyle(color: .soundCheckAmber))
+                        .toggleStyle(SolidToggleStyle(color: theme.accent))
                     }
                     .padding(8)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    // A channel-strip plate lifted above the `surface` panel (surfaceRaised,
+                    // chassis tone) -- ADR 0005's elevation model.
+                    .background(theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(theme.border, lineWidth: 1)
+                    )
                 }
             }
         }
