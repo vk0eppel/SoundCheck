@@ -30,6 +30,18 @@ Kellett's `0.11` output scaling constant was chosen (in the original algorithm) 
 
 **Same known limitation as the per-mode compensation gains:** this raises pink noise's transient peaks closer to full scale at high `levelDbfs` settings, on top of an already-uncompensated (non-peak-normalized) generator. Flagged, not fixed, as part of this change — see the "Level compensation" addenda in the other two research docs for the same caveat in more detail.
 
+## Full-scale reference calibration (post-implementation addendum)
+
+The compensation above matches Pink's RMS to White's, but *both* were referenced to White's uniform-distribution RMS of `1/sqrt(3)` — i.e. ~4.77dB below the nominal full-scale peak that `levelDbfs` scales to. That's a self-consistent *peak/amplitude* interpretation of `Level`, but it means broadband noise measures below its `Level` setting on an analyzer that uses the standard **AES17 reference (0 dBFS == full-scale *sine*)**: such an analyzer adds +3.01dB to a raw sample-RMS reading, so noise at `Level -20` reads ~`-20 - 4.77 + 3.01 ≈ -21.8 ≈ -22 dBFS`, while a Sine at `-20` reads exactly `-20` (its crest factor already matches the reference).
+
+`noiseFullScaleReferenceGain` (`SoundCheck/SignalRenderCore.swift`) closes that gap: a uniform `sqrt(3/2)` (+1.76dB) gain applied to both noise generators (all sub-modes), lifting their RMS from `1/sqrt(3)` up to a full-scale sine's RMS of `1/sqrt(2)`. Noise then reads its `Level` setting on an AES17 analyzer, matching Sine's behavior. It's a separate constant layered *on top of* `pinkLevelCompensationGain` (which stays the Pink→White matcher), so the two concerns — "Pink as loud as White" and "noise reads the Level setting" — remain independently adjustable. Verified by `fullRangeNoiseRMSMatchesFullScaleSineRMS` (both noises land within 0.3dB of a full-scale sine's RMS at the same Level).
+
+**Trade-off (same family as above):** the +1.76dB lift pushes noise peaks correspondingly closer to (and, at high `Level`, past) full scale — the deliberate cost accepted when choosing "reads the Level setting" over "peaks stay bounded."
+
+## Sub-mode band calibration (cross-reference)
+
+The per-sub-mode (band-limited / 1/3-octave) makeup gains that sit *on top of* the two full-range constants here (`pinkLevelCompensationGain`, `noiseFullScaleReferenceGain`) were later reworked from closed-form nominal-width ratios into an effective-noise-bandwidth integral over each realized filter's true power response — bringing every band within ≤1dB of full-range across sample rates. Those two full-range constants are unaffected (the integral returns exactly 1 for full-range). One relevant detail: pink's band integral weights by the *actual* Kellett filter response (`kellettPinkResponseSquared`, poles matching `PinkNoiseGenerator`) rather than ideal 1/f, precisely because Kellett's construction plateaus toward DC instead of diverging — giving a correct, finite low-end reference. See the "Effective-noise-bandwidth calibration" addendum in `band-limited-noise-generation.md`.
+
 ## Sources
 
 - [Pink Noise Generator - DSP Code Snippet](https://www.dsprelated.com/showcode/216.php)

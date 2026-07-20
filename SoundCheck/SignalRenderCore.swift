@@ -121,29 +121,19 @@ final class SweepGenerator: SignalGenerator {
 /// Owns "rebuild the band-limited/1/3-octave filter when `NoiseMode` changes, else reuse"
 /// and "dispatch the raw sample through whichever filter (or none) is currently active" —
 /// the ~25-line pattern `PinkNoiseGenerator` and `WhiteNoiseGenerator` used to each implement
-/// separately, identical but for `NoiseSpectralShape` and White's extra per-band
-/// compensation gain. Real-time-safe: filters are only rebuilt on an actual mode change,
-/// never per sample, the same guarantee the two generators already provided individually.
+/// separately, identical but for `NoiseSpectralShape`. Real-time-safe: filters are only rebuilt
+/// on an actual mode change, never per sample, the same guarantee the two generators already
+/// provided individually. Both filter chains now own their own `noiseBandMakeupGain` (derived
+/// from `shape`), so this type no longer carries a separate third-octave compensation closure.
 struct NoiseModeFilter {
     private let shape: NoiseSpectralShape
-    private let thirdOctaveCompensationGain: (Double) -> Double
 
     private var currentMode: NoiseMode = .fullRange
     private var bandLimitedFilter: BandLimitedFilterChain?
     private var thirdOctaveFilter: ThirdOctaveFilterChain?
-    // Computed once when `.thirdOctave` is (re)adopted, not per sample -- Pink passes a
-    // closure returning its fixed `thirdOctaveLevelCompensationGain` constant; White's is a
-    // function of centerHz, so it can't be a simple constant and must be cached here instead.
-    private var cachedThirdOctaveCompensationGain: Double = 1
 
-    /// `thirdOctaveCompensationGain` computes the per-band makeup gain applied after
-    /// `ThirdOctaveFilterChain`, given the band's center Hz — Pink passes
-    /// `{ _ in thirdOctaveLevelCompensationGain }` (its fixed constant), White passes
-    /// `whiteThirdOctaveLevelCompensationGain(centerHz:)` directly (a function of center Hz,
-    /// since White's flat PSD needs different per-band math than Pink's 1/f one).
-    init(shape: NoiseSpectralShape, thirdOctaveCompensationGain: @escaping (Double) -> Double) {
+    init(shape: NoiseSpectralShape) {
         self.shape = shape
-        self.thirdOctaveCompensationGain = thirdOctaveCompensationGain
     }
 
     mutating func process(_ sample: Double, mode: NoiseMode, sampleRate: Double) -> Double {
@@ -158,8 +148,7 @@ struct NoiseModeFilter {
                 thirdOctaveFilter = nil
             case .thirdOctave(let bandIndex):
                 let centerHz = ThirdOctaveBands.centerFrequenciesHz[bandIndex]
-                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate)
-                cachedThirdOctaveCompensationGain = thirdOctaveCompensationGain(centerHz)
+                thirdOctaveFilter = ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate, shape: shape)
                 bandLimitedFilter = nil
             }
         }
@@ -170,7 +159,7 @@ struct NoiseModeFilter {
         case .bandLimited:
             return bandLimitedFilter?.process(sample) ?? sample
         case .thirdOctave:
-            return (thirdOctaveFilter?.process(sample) ?? sample) * cachedThirdOctaveCompensationGain
+            return thirdOctaveFilter?.process(sample) ?? sample
         }
     }
 }
@@ -182,8 +171,7 @@ struct NoiseModeFilter {
 /// mode actually changes, via the shared `NoiseModeFilter`.
 final class WhiteNoiseGenerator: SignalGenerator {
     private var state: UInt64
-    private var noiseModeFilter = NoiseModeFilter(
-        shape: .whiteFlat, thirdOctaveCompensationGain: whiteThirdOctaveLevelCompensationGain(centerHz:))
+    private var noiseModeFilter = NoiseModeFilter(shape: .whiteFlat)
 
     init(seed: UInt64 = 0x2545_F491_4F6C_DD1D) {
         state = seed
@@ -203,7 +191,9 @@ final class WhiteNoiseGenerator: SignalGenerator {
     }
 
     func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
-        let whiteSample = rawSample()
+        // Scale only White's public output, not the pure `rawSample()` Pink draws from — Pink
+        // applies `noiseFullScaleReferenceGain` itself so the lift lands exactly once per generator.
+        let whiteSample = rawSample() * noiseFullScaleReferenceGain
         return noiseModeFilter.process(whiteSample, mode: parameters.whiteNoiseMode, sampleRate: sampleRate)
     }
 }
@@ -224,8 +214,7 @@ final class PinkNoiseGenerator: SignalGenerator {
     // Rebuilt only when `pinkNoiseMode` actually changes (never per sample) — see
     // docs/research/band-limited-noise-generation.md and
     // docs/research/one-third-octave-noise-generation.md.
-    private var noiseModeFilter = NoiseModeFilter(
-        shape: .pinkOneOverF, thirdOctaveCompensationGain: { _ in thirdOctaveLevelCompensationGain })
+    private var noiseModeFilter = NoiseModeFilter(shape: .pinkOneOverF)
 
     init(seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
         white = WhiteNoiseGenerator(seed: seed)
@@ -241,7 +230,8 @@ final class PinkNoiseGenerator: SignalGenerator {
         b3 = 0.86650 * b3 + whiteSample * 0.3104856
         b4 = 0.55000 * b4 + whiteSample * 0.5329522
         b5 = -0.7616 * b5 - whiteSample * 0.0168980
-        let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362) * 0.11 * pinkLevelCompensationGain
+        let pink = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + whiteSample * 0.5362)
+            * 0.11 * pinkLevelCompensationGain * noiseFullScaleReferenceGain
         b6 = whiteSample * 0.115926
 
         return noiseModeFilter.process(pink, mode: parameters.pinkNoiseMode, sampleRate: sampleRate)
@@ -352,9 +342,9 @@ enum NoiseSpectralShape {
 /// Cascades `Biquad` sections realizing a `BandLimitedPreset`'s optional highpass and/or
 /// lowpass edge, each edge a 4th-order (2-section) Butterworth cascade — the standard
 /// per-section Q values from docs/research/band-limited-noise-generation.md. Also applies
-/// `levelCompensationGain` so a narrowed band's RMS matches full-range noise's RMS at
-/// the same `levelDbfs` — the formula depends on `shape` (see `NoiseSpectralShape` and the
-/// comment on `fullRangeOctaveSpan` below for why Pink and White need different math).
+/// `levelCompensationGain` so a narrowed band's RMS matches full-range noise's RMS at the same
+/// `levelDbfs`, computed from the realized cascade's effective noise bandwidth via
+/// `noiseBandMakeupGain` (weighted by `shape`'s PSD — see `NoiseSpectralShape`).
 struct BandLimitedFilterChain {
     private static let butterworth4thOrderQs: [Double] = [0.54120, 1.30656]
 
@@ -368,25 +358,18 @@ struct BandLimitedFilterChain {
                 Biquad(type: .highpass, f0: highpassHz, q: $0, sampleRate: sampleRate)
             }
         }
-        if let lowpassHz = edges.lowpassHz {
+        // Guard against a manual high edge at/above Nyquist (undefined `Biquad` response); the
+        // band then simply extends to Nyquist. Fixed presets top out at 20kHz, safe at all rates.
+        if let lowpassHz = edges.lowpassHz, lowpassHz < sampleRate / 2 {
             sections += Self.butterworth4thOrderQs.map {
                 Biquad(type: .lowpass, f0: lowpassHz, q: $0, sampleRate: sampleRate)
             }
         }
 
-        // No highpass edge (0-200Hz) floors at the app's own 20Hz bound; no lowpass edge
-        // (1k-20kHz/7k-20kHz) ceils at its 20kHz bound -- the same fixed range used
-        // everywhere else (frequency field, ThirdOctaveBands).
-        let lowHz = edges.highpassHz ?? 20
-        let highHz = edges.lowpassHz ?? 20000
-        switch shape {
-        case .pinkOneOverF:
-            let octaveSpan = log2(highHz / lowHz)
-            levelCompensationGain = octaveSpan > 0 ? (fullRangeOctaveSpan / octaveSpan).squareRoot() : 1
-        case .whiteFlat:
-            let bandwidthHz = highHz - lowHz
-            levelCompensationGain = bandwidthHz > 0 ? (fullRangeBandwidthHz / bandwidthHz).squareRoot() : 1
-        }
+        // Makeup gain from the realized cascade's effective noise bandwidth (see
+        // `noiseBandMakeupGain`), not a nominal-edge ratio -- so it accounts for the actual
+        // Butterworth skirts and is correct at any sample rate.
+        levelCompensationGain = noiseBandMakeupGain(sections: sections, shape: shape, sampleRate: sampleRate)
     }
 
     mutating func process(_ x: Double) -> Double {
@@ -412,16 +395,30 @@ struct ThirdOctaveFilterChain {
     ]
 
     private var sections: [Biquad] = []
+    private let levelCompensationGain: Double
 
-    init(centerHz: Double, sampleRate: Double) {
+    init(centerHz: Double, sampleRate: Double, shape: NoiseSpectralShape) {
         let lowEdge = centerHz / pow(2, 1.0 / 6.0)
         let highEdge = centerHz * pow(2, 1.0 / 6.0)
         sections = Self.butterworth16thOrderQs.map {
             Biquad(type: .highpass, f0: lowEdge, q: $0, sampleRate: sampleRate)
         }
-        sections += Self.butterworth16thOrderQs.map {
-            Biquad(type: .lowpass, f0: highEdge, q: $0, sampleRate: sampleRate)
+        // Skip the lowpass edge if it lands at/above Nyquist (e.g. the 20kHz band at a 44.1kHz
+        // rate, whose upper edge is ~22.4kHz > 22.05kHz Nyquist) -- a `Biquad` with f0 >= Nyquist
+        // has an undefined (NaN-producing) response. The band then extends to Nyquist, which is
+        // all that's representable there anyway.
+        if highEdge < sampleRate / 2 {
+            sections += Self.butterworth16thOrderQs.map {
+                Biquad(type: .lowpass, f0: highEdge, q: $0, sampleRate: sampleRate)
+            }
         }
+        // Makeup gain from the realized cascade's effective noise bandwidth (see
+        // `noiseBandMakeupGain`). This replaces the old per-shape closed-form constant
+        // (Pink's fixed `thirdOctaveLevelCompensationGain` and White's
+        // `whiteThirdOctaveLevelCompensationGain(centerHz:)`): the integral is frequency- and
+        // sample-rate-aware, so it corrects the edge-band (near-DC/Nyquist) error those
+        // nominal-width formulas couldn't. Applied in `process`, like `BandLimitedFilterChain`.
+        levelCompensationGain = noiseBandMakeupGain(sections: sections, shape: shape, sampleRate: sampleRate)
     }
 
     mutating func process(_ x: Double) -> Double {
@@ -429,7 +426,7 @@ struct ThirdOctaveFilterChain {
         for index in sections.indices {
             y = sections[index].process(y)
         }
-        return y
+        return y * levelCompensationGain
     }
 }
 
@@ -437,7 +434,7 @@ struct ThirdOctaveFilterChain {
 /// for a full-scale white noise input, not to match its RMS (perceived loudness) to Sine's
 /// or White's at the same `levelDbfs` -- pink noise's higher crest factor means its raw
 /// output measures ~9.5dB quieter in RMS than White noise at the same nominal level, audibly
-/// so. Unlike `fullRangeOctaveSpan`'s ratio, there's no closed-form expression for Kellett's
+/// so. Unlike the band makeup gains, there's no closed-form expression for Kellett's
 /// IIR construction's output RMS, so this is an empirically-measured makeup gain (RMS of 20M
 /// samples of the exact `PinkNoiseGenerator` recurrence, calibrated to match
 /// `WhiteNoiseGenerator`'s theoretical uniform-distribution RMS of `1/sqrt(3)`) -- the same
@@ -447,35 +444,101 @@ struct ThirdOctaveFilterChain {
 /// establish between Pink's sub-modes. See docs/research/pink-white-noise-generation.md.
 let pinkLevelCompensationGain = 2.98
 
-/// Pink noise's PSD is 1/f -- equal energy per octave -- so narrowing from the app's full
-/// 20Hz-20kHz span down to a smaller band discards most of the signal's energy. Without
-/// compensation, `levelDbfs` would describe the pre-filter amplitude, not the actual
-/// (much quieter) filtered output. `fullRangeOctaveSpan` is the reference span used by both
-/// `BandLimitedFilterChain` and `thirdOctaveLevelCompensationGain` below to compute a makeup
-/// gain that restores the RMS a full-range signal would have at the same `levelDbfs`. See
-/// docs/research/band-limited-noise-generation.md and
-/// docs/research/one-third-octave-noise-generation.md.
-let fullRangeOctaveSpan = log2(20000.0 / 20.0)
+/// Lifts broadband noise RMS from the uniform-white reference (`1/sqrt(3)`, ~4.77dB below full
+/// scale) up to a full-scale *sine*'s RMS (`1/sqrt(2)`), so an analyzer using the standard AES17
+/// reference (0 dBFS == full-scale sine) reads the `Level` setting for noise the same way it
+/// already does for Sine -- without this, broadband noise at Level -20 measures ~-22dBFS on such
+/// an analyzer, since its RMS-to-peak (crest factor) differs from a sine's. Factor = `sqrt(3/2)`
+/// (+1.76dB), applied uniformly to White and Pink across all sub-modes, so it composes on top of
+/// `pinkLevelCompensationGain` (the pink->white matcher) and the per-mode compensation gains
+/// rather than replacing them. Trade-off: raises noise peaks ~1.76dB closer to full scale at high
+/// `Level`, on top of the already-uncompensated peaks flagged for the other noise makeup gains.
+/// See docs/research/pink-white-noise-generation.md.
+let noiseFullScaleReferenceGain = (3.0 / 2.0).squareRoot()
 
-/// 1/3-octave is always exactly 1/3-octave wide, so unlike `BandLimitedFilterChain`'s
-/// per-preset span, this compensation gain is a single fixed constant.
-let thirdOctaveLevelCompensationGain = (fullRangeOctaveSpan / (1.0 / 3.0)).squareRoot()
+/// Lower bound (Hz) of the makeup-gain reference integral in `noiseBandMakeupGain`. Set well
+/// below the audio band so full-range pink's low-end energy is counted (undercounting it biases
+/// every pink band's makeup gain low — ~0.5dB when the bound was 10Hz). It can sit this low
+/// without the 1/f divergence blowing up because pink is weighted by the *actual* Kellett
+/// response (`kellettPinkResponseSquared`), which plateaus below ~9Hz rather than rising as
+/// ideal 1/f would. White's flat PSD contributes negligibly this low (its weight ∝ f).
+private let noiseReferenceLowHz = 1.0
 
-/// White noise's PSD is flat -- equal energy per Hz, not per octave -- so its RMS² scales
-/// linearly with bandwidth in Hz, unlike Pink's octave-span scaling. `fullRangeBandwidthHz`
-/// is the linear-Hz analog of `fullRangeOctaveSpan`, used by `BandLimitedFilterChain`'s
-/// `.whiteFlat` shape and by `whiteThirdOctaveLevelCompensationGain` below. See
-/// docs/research/white-noise-band-limiting.md.
-let fullRangeBandwidthHz = 20000.0 - 20.0
+/// Makeup gain that restores a spectrally-narrowed noise band's RMS to what full-range noise
+/// has at the same `levelDbfs`, derived from the *realized* filter cascade's effective noise
+/// bandwidth rather than a nominal-edge width ratio.
+///
+/// For a cascade with power response `|H(f)|²` and noise PSD `S(f)`, the gain is
+/// `sqrt( ∫S(f)df / ∫S(f)|H(f)|²df )` — the ratio of the reference (unfiltered) band energy to
+/// what the filter actually passes. Both integrals share one weighting and range, so the result
+/// is purely "what fraction of the reference band survives the filter," and full-range
+/// (`sections` empty → `H≡1`) yields exactly 1 (leaving `pinkLevelCompensationGain`/
+/// `noiseFullScaleReferenceGain`, which set full-range *absolute* level, untouched).
+///
+/// Evaluated numerically on a dense **log-spaced** grid over `[noiseReferenceLowHz, Nyquist]` —
+/// log spacing (rather than linear) so that even the narrow low-frequency bands are resolved at
+/// any sample rate (a linear grid's spacing at 96kHz is wider than the 20Hz 1/3-octave band).
+/// Each point carries the weight `S(f)·f·d(ln f)`: **uniform** for `.pinkOneOverF` (1/f, so
+/// `f·d(ln f)/f`), **proportional to f** for `.whiteFlat` (flat, so `f·d(ln f)`).
+///
+/// Unlike the closed-form nominal-width ratios it replaces, this reflects the true Butterworth
+/// skirts and passband shape and is inherently sample-rate-correct (the grid runs to the actual
+/// Nyquist), which is what lets every band land within ~1dB across sample rates. Computed once
+/// per filter build (never per sample). See docs/research/band-limited-noise-generation.md,
+/// one-third-octave-noise-generation.md, and white-noise-band-limiting.md.
+func noiseBandMakeupGain(sections: [Biquad], shape: NoiseSpectralShape, sampleRate: Double) -> Double {
+    guard !sections.isEmpty else { return 1 }
+    let sampleCount = 8192
+    let nyquist = sampleRate / 2
+    let logRatio = log(nyquist / noiseReferenceLowHz)
+    var referencePower = 0.0
+    var passedPower = 0.0
+    for index in 0..<sampleCount {
+        let t = (Double(index) + 0.5) / Double(sampleCount)
+        let frequencyHz = noiseReferenceLowHz * exp(logRatio * t)   // log grid, lowHz..Nyquist
+        let omega = 2 * Double.pi * frequencyHz / sampleRate
+        // Per-point weight `S(f)·f·d(ln f)` on the log grid (constant `d(ln f)` cancels in the
+        // ratio). White's PSD is flat (S=1 → weight ∝ f). Pink uses the *actual* Kellett filter
+        // response as S rather than ideal 1/f: near the audio band the two agree to ~0.05dB, but
+        // ideal 1/f keeps rising toward DC while the real generator plateaus below ~9Hz, so only
+        // the real response gives the correct low-end reference energy down to `noiseReferenceLowHz`.
+        let weight = shape == .whiteFlat
+            ? frequencyHz
+            : kellettPinkResponseSquared(atNormalizedFrequency: omega) * frequencyHz
+        var powerResponse = 1.0
+        for section in sections {
+            powerResponse *= section.magnitudeSquared(atNormalizedFrequency: omega)
+        }
+        referencePower += weight
+        passedPower += weight * powerResponse
+    }
+    return passedPower > 0 ? (referencePower / passedPower).squareRoot() : 1
+}
 
-/// Unlike Pink's fixed-fraction 1/3-octave band (always exactly 1/3 octave wide, hence a
-/// single `thirdOctaveLevelCompensationGain` constant), a 1/3-octave band's width in Hz
-/// varies with its center frequency (roughly constant *percentage* bandwidth, so low bands
-/// are narrow in Hz and high bands are wide) -- so White's compensation has to be computed
-/// per band rather than as one constant. See docs/research/white-noise-band-limiting.md.
-func whiteThirdOctaveLevelCompensationGain(centerHz: Double) -> Double {
-    let bandwidthHz = centerHz * (pow(2, 1.0 / 6.0) - pow(2, -1.0 / 6.0))
-    return bandwidthHz > 0 ? (fullRangeBandwidthHz / bandwidthHz).squareRoot() : 1
+/// Squared magnitude of Paul Kellett's pink-filter transfer function (flat white → pink), used
+/// as the pink PSD shape when computing pink band makeup gains. More faithful than ideal 1/f in
+/// the one place it matters: it plateaus toward DC (the 7 poles are finite there) instead of
+/// diverging, giving a correct, finite low-end reference energy. The poles/gains, the `z⁻¹`
+/// term, and the direct term match `PinkNoiseGenerator.nextSample` exactly; constant output
+/// scalars (`0.11`, `pinkLevelCompensationGain`, `noiseFullScaleReferenceGain`) are omitted as
+/// they cancel in the makeup-gain ratio.
+func kellettPinkResponseSquared(atNormalizedFrequency omega: Double) -> Double {
+    let poles: [(a: Double, g: Double)] = [
+        (0.99886, 0.0555179), (0.99332, 0.0750759), (0.96900, 0.1538520),
+        (0.86650, 0.3104856), (0.55000, 0.5329522), (-0.7616, -0.0168980),
+    ]
+    let cosw = cos(omega), sinw = sin(omega)
+    var re = 0.5362 + 0.115926 * cosw   // direct white term + `whiteSample * 0.115926` at z⁻¹
+    var im = -0.115926 * sinw
+    for pole in poles {
+        // g / (1 - a·e^{-jω}) = g·conj(d)/|d|², d = (1 - a·cosω) + j·(a·sinω)
+        let dRe = 1 - pole.a * cosw
+        let dIm = pole.a * sinw
+        let denom = dRe * dRe + dIm * dIm
+        re += pole.g * dRe / denom
+        im += -pole.g * dIm / denom
+    }
+    return re * re + im * im
 }
 
 struct RenderParameters: Equatable, Sendable {

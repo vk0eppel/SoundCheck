@@ -34,6 +34,10 @@ Both formulas were validated empirically against `filteredWhiteModesMatchFullRan
 
 `pinkLevelCompensationGain` (the Kellett-generator-specific empirical makeup gain that calibrates Pink's raw RMS to match White's) is unrelated to this derivation and required no changes — it addresses Kellett's construction, not band-limiting, and White's own full-range RMS is already the reference that gain calibrates against.
 
+## Superseded by the effective-noise-bandwidth integral (post-implementation addendum)
+
+The two closed forms above (`.whiteFlat`'s `sqrt(fullRangeBandwidthHz / bandwidthHz)` and `whiteThirdOctaveLevelCompensationGain`) were correct in their nominal-brick-wall model but, like Pink's octave-span form, left up to ~1.5dB of real per-band error at the spectrum edges once measured against actual filtered RMS across sample rates (the 20Hz 1/3-octave band was the worst). They're now replaced by the shared `noiseBandMakeupGain` — see the "Effective-noise-bandwidth calibration" addendum in `band-limited-noise-generation.md` for the derivation. For white, the integral simply uses a flat PSD (`S=1`, so the log-grid weight is `∝ f`); no separate white formula remains. `fullRangeBandwidthHz` and `whiteThirdOctaveLevelCompensationGain` are deleted. The validation tolerance tightened from ±3dB to ≤1dB, now checked at 44.1/48/96kHz.
+
 ## Sources
 
 - `docs/research/band-limited-noise-generation.md` (Pink's band-limited filter topology and its "Level compensation" addendum, the octave-span formula this doc departs from)

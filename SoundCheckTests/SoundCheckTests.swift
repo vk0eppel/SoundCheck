@@ -614,28 +614,22 @@ struct SoundCheckTests {
         for centerHz in [100.0, 630.0, 2000.0] {
             func gain(_ probeHz: Double) -> Double {
                 Self.steadyStateGain(
-                    ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate),
+                    ThirdOctaveFilterChain(centerHz: centerHz, sampleRate: sampleRate, shape: .pinkOneOverF),
                     probeFrequencyHz: probeHz, sampleRate: sampleRate
                 )
             }
 
-            // Center measures a modest, expected dip (~-0.2dB) from the two edges'
-            // transition bands slightly overlapping this close together -- not the exact
-            // unity gain the earlier single-bandpass-biquad design gave, but close.
-            #expect(abs(gain(centerHz) - 1) < 0.05)
-            // Well attenuated two octaves either side of center.
-            #expect(gain(centerHz / 4) < 0.05)
-            #expect(gain(centerHz * 4) < 0.05)
+            // `ThirdOctaveFilterChain.process` now bakes in its `noiseBandMakeupGain` (a single
+            // frequency-independent scalar), so gains are measured *relative to* the center's,
+            // which isolates the filter's shape from that scalar. Well attenuated (<-26dB, i.e.
+            // ratio < 0.05) two octaves either side of center.
+            let center = gain(centerHz)
+            #expect(center > 0)
+            #expect(gain(centerHz / 4) / center < 0.05)
+            #expect(gain(centerHz * 4) / center < 0.05)
         }
     }
 
-    /// Pink noise is equal-energy-per-octave, so without a makeup gain, band-limited/
-    /// 1/3-octave modes would measure many dB quieter than full-range pink at the same
-    /// `levelDbfs` -- the config value would describe the pre-filter amplitude, not the
-    /// actual output. Verifies the compensation gain in `BandLimitedFilterChain` and
-    /// `thirdOctaveLevelCompensationGain` keeps measured RMS close to full-range's at a
-    /// fixed Level. A real biquad's finite transition-band roll-off (not brick-wall) means
-    /// this can't match exactly, hence the generous tolerance.
     /// Kellett's raw pink noise construction has a much higher crest factor than White's
     /// uniform distribution, so without `pinkLevelCompensationGain` its RMS (perceived
     /// loudness) measured far below White's at the same `levelDbfs` -- audibly "not as loud
@@ -656,7 +650,7 @@ struct SoundCheckTests {
                 $0.channelMuted = [false]
                 $0.channelPhaseReversed = [false]
             }
-            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+            let channels = Self.renderSteadyState(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
             let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
             let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
             return meanSquare.squareRoot()
@@ -668,84 +662,94 @@ struct SoundCheckTests {
         #expect(abs(20 * log10(pinkRMS / whiteRMS)) < 1)
     }
 
-    @Test func filteredPinkModesMatchFullRangeRMSAtTheSameLevel() async throws {
+    /// `noiseFullScaleReferenceGain` lifts broadband noise RMS up to a full-scale *sine*'s RMS,
+    /// so an AES17 analyzer (0 dBFS == full-scale sine) reads the `Level` setting for noise the
+    /// same way it does for Sine -- e.g. Pink/White at -20 read ~-20dBFS, not ~-22. Verifies both
+    /// full-range noise generators' RMS lands within a fraction of a dB of a full-scale sine's RMS
+    /// at the same Level (here Level 0), which is exactly the AES17 "reads the setting" condition.
+    @Test func fullRangeNoiseRMSMatchesFullScaleSineRMS() async throws {
         let sampleRate = 48000.0
         let frameCount = 96000
-        let levelDbfs = -12.0
+        let levelDbfs = 0.0
 
-        func rms(mode: NoiseMode) -> Double {
+        func rms(generatorKind: GeneratorKind) -> Double {
             let core = SignalRenderCore()
             core.updateParameters {
-                $0.generatorKind = .pink
+                $0.generatorKind = generatorKind
+                $0.frequencyHz = 1000
                 $0.levelDbfs = levelDbfs
                 $0.running = true
-                $0.pinkNoiseMode = mode
+                $0.pinkNoiseMode = .fullRange
+                $0.whiteNoiseMode = .fullRange
                 $0.channelMuted = [false]
                 $0.channelPhaseReversed = [false]
             }
-            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+            let channels = Self.renderSteadyState(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
             let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
             let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
             return meanSquare.squareRoot()
         }
 
-        let fullRangeRMS = rms(mode: .fullRange)
-        func dbRatio(_ mode: NoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
+        let sineRMS = rms(generatorKind: .sine)
+        let whiteRMS = rms(generatorKind: .white)
+        let pinkRMS = rms(generatorKind: .pink)
 
+        #expect(abs(20 * log10(whiteRMS / sineRMS)) < 0.3)
+        #expect(abs(20 * log10(pinkRMS / sineRMS)) < 0.3)
+    }
+
+    /// Every band-limited preset and a spread of 1/3-octave bands must read the same Level as
+    /// full-range noise (which itself reads a full-scale sine via `noiseFullScaleReferenceGain`),
+    /// for *both* noise colors and across sample rates. The makeup gain comes from each realized
+    /// filter's effective noise bandwidth (`noiseBandMakeupGain`) — frequency- and
+    /// sample-rate-aware — so this asserts ≤1dB at 44.1/48/96kHz, including the 20Hz and 20kHz
+    /// edge bands (indices 0 and 30), which the old nominal-width formulas missed by >2dB. A long
+    /// averaging window (4s measured after a 2s settle) keeps the narrow low-frequency bands' RMS
+    /// estimate stable; the generators are fixed-seeded, so results are reproducible.
+    private func assertFilteredModesMatchFullRange(kind: GeneratorKind) {
         let presets: [BandLimitedPreset] = [
             .preset0to200Hz, .preset200HzTo1kHz, .preset1kTo20kHz, .preset7kTo20kHz,
             .manual(lowHz: 2000, highHz: 4000),
         ]
-        for preset in presets {
-            #expect(abs(dbRatio(.bandLimited(preset))) < 3)
-        }
+        let bandIndices = [0, 5, 10, 17, 25, 30]   // 20Hz … 20kHz — edge bands included
 
-        for bandIndex in [5, 17, 25] {
-            #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 3)
+        for sampleRate in [44100.0, 48000.0, 96000.0] {
+            let frameCount = Int(6 * sampleRate)
+            func rms(_ mode: NoiseMode) -> Double {
+                let core = SignalRenderCore()
+                core.updateParameters {
+                    $0.generatorKind = kind
+                    $0.levelDbfs = -12
+                    $0.running = false
+                    $0.pinkNoiseMode = mode
+                    $0.whiteNoiseMode = mode
+                    $0.channelMuted = [false]
+                    $0.channelPhaseReversed = [false]
+                }
+                let channels = Self.renderSteadyState(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
+                let settled = channels[0].suffix(frameCount - Int(2.0 * sampleRate))
+                let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
+                return meanSquare.squareRoot()
+            }
+
+            let fullRangeRMS = rms(.fullRange)
+            func dbRatio(_ mode: NoiseMode) -> Double { 20 * log10(rms(mode) / fullRangeRMS) }
+
+            for preset in presets {
+                #expect(abs(dbRatio(.bandLimited(preset))) < 1, "\(kind) band-limited \(preset) @ \(sampleRate)Hz")
+            }
+            for bandIndex in bandIndices {
+                #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 1, "\(kind) 1/3-oct band \(bandIndex) @ \(sampleRate)Hz")
+            }
         }
     }
 
-    /// White's PSD is flat (equal energy per Hz), not 1/f like Pink's -- reusing Pink's
-    /// octave-span compensation formula would be audibly wrong. Verifies the linear-Hz-based
-    /// formulas in `BandLimitedFilterChain`'s `.whiteFlat` shape and
-    /// `whiteThirdOctaveLevelCompensationGain` keep measured RMS close to full-range White's
-    /// at a fixed Level -- the practical validation of that derivation. See
-    /// docs/research/white-noise-band-limiting.md.
+    @Test func filteredPinkModesMatchFullRangeRMSAtTheSameLevel() async throws {
+        assertFilteredModesMatchFullRange(kind: .pink)
+    }
+
     @Test func filteredWhiteModesMatchFullRangeRMSAtTheSameLevel() async throws {
-        let sampleRate = 48000.0
-        let frameCount = 96000
-        let levelDbfs = -12.0
-
-        func rms(mode: NoiseMode) -> Double {
-            let core = SignalRenderCore()
-            core.updateParameters {
-                $0.generatorKind = .white
-                $0.levelDbfs = levelDbfs
-                $0.running = true
-                $0.whiteNoiseMode = mode
-                $0.channelMuted = [false]
-                $0.channelPhaseReversed = [false]
-            }
-            let channels = Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)
-            let settled = channels[0].suffix(frameCount - Int(0.5 * sampleRate))
-            let meanSquare = settled.reduce(Double(0)) { $0 + Double($1) * Double($1) } / Double(settled.count)
-            return meanSquare.squareRoot()
-        }
-
-        let fullRangeRMS = rms(mode: .fullRange)
-        func dbRatio(_ mode: NoiseMode) -> Double { 20 * log10(rms(mode: mode) / fullRangeRMS) }
-
-        let presets: [BandLimitedPreset] = [
-            .preset0to200Hz, .preset200HzTo1kHz, .preset1kTo20kHz, .preset7kTo20kHz,
-            .manual(lowHz: 2000, highHz: 4000),
-        ]
-        for preset in presets {
-            #expect(abs(dbRatio(.bandLimited(preset))) < 3)
-        }
-
-        for bandIndex in [5, 17, 25] {
-            #expect(abs(dbRatio(.thirdOctave(bandIndex: bandIndex))) < 3)
-        }
+        assertFilteredModesMatchFullRange(kind: .white)
     }
 
     /// `PinkNoiseGenerator` holds its own internal `WhiteNoiseGenerator` to drive its Kellett
@@ -768,7 +772,7 @@ struct SoundCheckTests {
                 $0.channelMuted = [false]
                 $0.channelPhaseReversed = [false]
             }
-            return Self.renderToArrays(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)[0]
+            return Self.renderSteadyState(core, frameCount: frameCount, channelCount: 1, sampleRate: sampleRate)[0]
         }
 
         let withFullRangeWhite = pinkSamples(whiteNoiseMode: .fullRange)
@@ -1074,6 +1078,24 @@ struct SoundCheckTests {
         }
 
         return buffers.map { Array($0) }
+    }
+
+    /// Renders steady-state output for the generator already configured on `core`, working around
+    /// the render loop only adopting `RenderParameters.generatorKind` on a frame where `rampGain`
+    /// is exactly 0. A fresh core starts at `rampGain == 0` with `activeGeneratorKind == .sine`,
+    /// but the ramp is stepped *before* the adoption check, so the first `running == true` frame
+    /// bumps `rampGain` above 0 before the kind is ever adopted -- leaving the core stuck rendering
+    /// its `.sine` default. This primes it with a short `running == false` block (where `rampGain`
+    /// stays 0 so the real kind is adopted every frame), then ramps up and renders the measured
+    /// block. Use this instead of `renderToArrays` whenever a test asserts on a *non-sine*
+    /// generator's output. (Sweep/square tests already prime by hand via a 1-frame warm-up.)
+    private static func renderSteadyState(
+        _ core: SignalRenderCore, frameCount: Int, channelCount: Int, sampleRate: Double
+    ) -> [[Float]] {
+        core.updateParameters { $0.running = false }
+        _ = renderToArrays(core, frameCount: 64, channelCount: channelCount, sampleRate: sampleRate)
+        core.updateParameters { $0.running = true }
+        return renderToArrays(core, frameCount: frameCount, channelCount: channelCount, sampleRate: sampleRate)
     }
 
 }

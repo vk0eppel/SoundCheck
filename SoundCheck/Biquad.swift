@@ -73,4 +73,20 @@ struct Biquad {
         w1 = w0
         return y
     }
+
+    /// Squared magnitude of the transfer function at normalized angular frequency `omega`
+    /// (radians/sample, i.e. `2*pi*f/sampleRate`, valid over `0...pi`). Computed purely from the
+    /// stored coefficients (`|H(e^jω)|² = |num|²/|den|²`, with `a0` already normalized to 1) —
+    /// no filter state is touched, so it's safe to call at filter-build time. Used to measure a
+    /// cascade's effective noise bandwidth when computing a mode's level-compensation gain.
+    func magnitudeSquared(atNormalizedFrequency omega: Double) -> Double {
+        let c1 = cos(omega), s1 = sin(omega)
+        let c2 = cos(2 * omega), s2 = sin(2 * omega)
+        let numRe = b0 + b1 * c1 + b2 * c2
+        let numIm = -(b1 * s1 + b2 * s2)
+        let denRe = 1 + a1 * c1 + a2 * c2
+        let denIm = -(a1 * s1 + a2 * s2)
+        let denMagSq = denRe * denRe + denIm * denIm
+        return denMagSq > 0 ? (numRe * numRe + numIm * numIm) / denMagSq : 0
+    }
 }
