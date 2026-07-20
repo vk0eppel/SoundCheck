@@ -13,6 +13,7 @@
 import AVFoundation
 import CoreAudio
 import Observation
+import os
 
 /// Wraps `SignalRenderCore` in a real `AVAudioSourceNode`/`AVAudioEngine` graph and binds
 /// output to a specific Core Audio device, per the architecture in docs/v1-spec.md: stays
@@ -24,36 +25,73 @@ final class AudioEngineController {
 
     private(set) var lastStartError: String?
 
-    private let engine = AVAudioEngine()
+    /// Rebuilt from scratch on every device switch. `AVAudioEngine`'s `outputNode` caches the
+    /// stream format it negotiated with the *first* device it bound to, and reusing one engine
+    /// across a switch to a device with a different sample rate (e.g. built-in 44.1kHz -> a
+    /// BlackHole/aggregate virtual device at 48kHz) leaves that stale format in place -> the
+    /// source-node connection silently mismatches and no audio reaches the new device. A fresh
+    /// engine per switch guarantees the graph binds to the newly-selected device's real format.
+    private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
+
+    private let log = Logger(subsystem: "com.soundcheck", category: "AudioEngineController")
 
     func selectDevice(_ device: AudioDeviceInfo) {
         engine.stop()
 
+        // Fresh engine so no stale output format survives from the previously-bound device.
+        engine = AVAudioEngine()
+
         guard setCoreAudioOutputDevice(device.id) else {
+            log.error("Failed to bind output device \(device.name, privacy: .public) (id \(device.id))")
             lastStartError = "Could not select \(device.name) as the output device."
             return
         }
 
-        let sampleRate = AudioDeviceCatalog.nominalSampleRate(for: device.id) ?? 48000
-        rebuildSourceNode(channelCount: device.outputChannelCount, sampleRate: sampleRate)
+        // Bind the render graph to the device's *actual* negotiated output format, not a
+        // hand-built format at the device's nominal sample rate. On a virtual/aggregate device
+        // the two can differ (rate or channel count); connecting a source node straight to
+        // `outputNode` inserts no sample-rate converter, so any mismatch renders as silence.
+        rebuildSourceNode(preferredChannelCount: device.outputChannelCount, deviceID: device.id)
 
         do {
             try engine.start()
             lastStartError = nil
         } catch {
+            log.error("engine.start() failed for \(device.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
             lastStartError = error.localizedDescription
         }
     }
 
-    private func rebuildSourceNode(channelCount: Int, sampleRate: Double) {
+    /// Dismisses a surfaced bind/start failure (the UI alert's cancel action).
+    func clearLastStartError() {
+        lastStartError = nil
+    }
+
+    private func rebuildSourceNode(preferredChannelCount: Int, deviceID: AudioDeviceID) {
         if let existing = sourceNode {
             engine.detach(existing)
             sourceNode = nil
         }
-        guard channelCount > 0,
-            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channelCount))
-        else { return }
+
+        // The format the engine's output node negotiated with the now-bound device — the source
+        // must render at exactly this rate/channel-count for the direct connection to carry audio.
+        let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+        let format: AVAudioFormat?
+        if outputFormat.sampleRate > 0, outputFormat.channelCount > 0 {
+            format = outputFormat
+        } else {
+            // Fall back to a constructed standard format if the output node hasn't reported one yet.
+            let sampleRate = AudioDeviceCatalog.nominalSampleRate(for: deviceID) ?? 48000
+            format = AVAudioFormat(
+                standardFormatWithSampleRate: sampleRate,
+                channels: AVAudioChannelCount(max(preferredChannelCount, 1)))
+        }
+        guard let format, format.channelCount > 0 else {
+            log.error("No usable output format; source node not built")
+            return
+        }
+        log.debug("Binding source node at \(format.sampleRate)Hz x \(format.channelCount)ch (device reports \(preferredChannelCount)ch)")
 
         let renderCore = self.renderCore
         let node = AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList -> OSStatus in

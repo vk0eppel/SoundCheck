@@ -494,6 +494,19 @@ struct ContentView: View {
         } message: {
             Text("The selected output device was disconnected. Playback has been stopped.")
         }
+        // Surface a device-bind/start failure instead of leaving it as silent, mysterious
+        // no-output: `selectDevice` only stores the reason in `lastStartError`, so without this
+        // a failed bind is indistinguishable from "playing but muted."
+        .alert(
+            "Could Not Start Output",
+            isPresented: Binding(
+                get: { engineController.lastStartError != nil },
+                set: { if !$0 { engineController.clearLastStartError() } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(engineController.lastStartError ?? "")
+        }
     }
 
     private var onOffButton: some View {
