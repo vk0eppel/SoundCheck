@@ -480,6 +480,13 @@ struct ContentView: View {
             settingsStore.update { $0.selectedDeviceUID = newValue }
         }
         .onChange(of: deviceCatalog.devices) { _, _ in handleDeviceListChanged() }
+        .onChange(of: signalSettings.isRunning) { _, running in
+            // The engine (and the CoreAudio HAL IO loop it drives) runs only while output is
+            // ON — leaving it running while OFF was a large idle-CPU cost on high-channel
+            // virtual devices. Funnels every transition (ON/OFF button, ADR-0003 signal-type
+            // stop, device-disconnect stop) through one place.
+            engineController.setRunning(running)
+        }
         .onChange(of: pinkDraft.resolved) { _, newValue in
             // Applies live, same as frequency/level — only a signal-*type* switch
             // forces a full stop (ADR 0003), not a change within a noise color's sub-modes.

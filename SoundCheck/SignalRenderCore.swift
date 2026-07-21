@@ -603,6 +603,28 @@ final class SignalRenderCore: @unchecked Sendable {
         channelBuffer: (Int) -> UnsafeMutableBufferPointer<Float>
     ) {
         let currentParameters = parametersLock.withLock { $0 }
+
+        // Output fully faded to silence: skip all synthesis (generator draw + biquad
+        // cascades) and just zero-fill. `rampGain` only decreases within a callback and
+        // `running` can't change mid-callback, so once it's 0 at the top of a callback it
+        // stays 0 for the whole block — safe to test once here instead of per frame. This is
+        // what keeps an idle (OFF) engine from burning CPU synthesizing discarded samples.
+        if !currentParameters.running && rampGain == 0 {
+            // Adopt any pending generator swap now that we're silent (ADR 0003 forces a stop
+            // on switch), edge-triggered — this replaces the per-frame adoption the frame
+            // loop's `rampGain == 0` branch used to do, so ON still starts on the newly
+            // selected generator.
+            if activeGeneratorKind != currentParameters.generatorKind {
+                activeGeneratorKind = currentParameters.generatorKind
+                generator(for: activeGeneratorKind).reset()
+            }
+            for channel in 0..<channelCount {
+                let buffer = channelBuffer(channel)
+                for frame in 0..<frameCount { buffer[frame] = 0 }
+            }
+            return
+        }
+
         let levelLinear = Self.linearGain(fromDbfs: currentParameters.levelDbfs)
         let rampStep = 1.0 / (Self.rampDurationSeconds * sampleRate)
 

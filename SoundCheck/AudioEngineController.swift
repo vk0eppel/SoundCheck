@@ -34,7 +34,50 @@ final class AudioEngineController {
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
 
+    /// The desired output state: the engine is only run while this is true. Keeping a
+    /// (possibly high-channel-count, virtual) device's CoreAudio HAL IO loop spinning while
+    /// output is OFF was the idle-CPU cost (~37% on a 64/112-channel virtual device) — the
+    /// engine's continuous per-channel HAL work, not our synthesis. Stored so `selectDevice`
+    /// (a device switch) knows whether to start the freshly-built engine.
+    private var shouldRun = false
+
+    /// A stop scheduled slightly after output goes OFF (see `setRunning`), cancellable if ON
+    /// is pressed again first.
+    private var pendingStop: Task<Void, Never>?
+
     private let log = Logger(subsystem: "com.soundcheck", category: "AudioEngineController")
+
+    /// Starts or stops the engine to match `running`. The `AudioUnit` device override set in
+    /// `selectDevice` persists across start/stop on the same engine (we only rebuild the engine
+    /// on a *device switch*, not on a run toggle), so no re-bind is needed here.
+    func setRunning(_ running: Bool) {
+        shouldRun = running
+        pendingStop?.cancel()
+        pendingStop = nil
+        if running {
+            startEngineIfNeeded()
+        } else {
+            // Delay the actual stop past the render core's ~15ms fade-out ramp so its tail
+            // isn't truncated into an audible click. Cancelled above if ON is pressed again
+            // first. Runs on the main actor (this type is @MainActor).
+            pendingStop = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(60))
+                guard !Task.isCancelled else { return }
+                self?.engine.stop()
+            }
+        }
+    }
+
+    private func startEngineIfNeeded() {
+        guard !engine.isRunning else { return }
+        do {
+            try engine.start()
+            lastStartError = nil
+        } catch {
+            log.error("engine.start() failed: \(error.localizedDescription, privacy: .public)")
+            lastStartError = error.localizedDescription
+        }
+    }
 
     func selectDevice(_ device: AudioDeviceInfo) {
         engine.stop()
@@ -54,12 +97,11 @@ final class AudioEngineController {
         // `outputNode` inserts no sample-rate converter, so any mismatch renders as silence.
         rebuildSourceNode(preferredChannelCount: device.outputChannelCount, deviceID: device.id)
 
-        do {
-            try engine.start()
-            lastStartError = nil
-        } catch {
-            log.error("engine.start() failed for \(device.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            lastStartError = error.localizedDescription
+        // Only run the freshly-built engine if output is currently ON. On launch / a device
+        // switch while OFF, the device stays bound and the source node ready, but the engine
+        // (and the CoreAudio HAL IO loop it drives) stays stopped — see `shouldRun`.
+        if shouldRun {
+            startEngineIfNeeded()
         }
     }
 
