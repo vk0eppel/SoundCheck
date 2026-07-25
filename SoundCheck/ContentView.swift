@@ -380,6 +380,7 @@ struct ContentView: View {
                     }
                     .pickerStyle(.segmented)
                     .tint(theme.accent)
+                    .help("Signal type — ⌥S Sine · ⌥Q Square · ⌥P Pink · ⌥W White · ⌥E Sweep")
                     .onChange(of: signalSettings.signalType) { _, _ in
                         // Resync the transient draft text to whichever color is now active --
                         // `thirdOctaveFrequencyControl`'s own `onAppear` resync (below) covers
@@ -425,6 +426,7 @@ struct ContentView: View {
             PanelSection(title: "OUTPUT") {
                 VStack(spacing: 16) {
                     devicePicker
+                    bulkMuteControls
                     channelRow
                 }
             }
@@ -453,9 +455,16 @@ struct ContentView: View {
         // The lighter console chassis the dark GENERATOR/OUTPUT wells recess into, mirroring
         // FreqTrace's meter-panel-on-surfaceRaised layering (ADR 0005).
         .background(theme.surfaceRaised)
-        // Behind the opaque chassis fill above: the number-key Mute shortcuts, disabled while a
-        // numeric field is focused so it keeps the typed digit instead.
+        // Behind the opaque chassis fill above: the invisible shortcut buttons. Every one of
+        // these emits into a focused field if left live (bare 1-0 Mute, ⌥1-0 phase, ⌥-letter
+        // picker keys), so all are gated by `anyFieldFocused` to keep the typed keystroke. The
+        // sub-mode keys are additionally gated off when no noise color is active so they can't
+        // silently mutate the hidden draft. (⌥M mute-all is the one deliberate exception — it's
+        // on its own visible button below, ungated, so the safety action always fires.)
         .background { channelMuteShortcuts.disabled(anyFieldFocused) }
+        .background { channelPhaseShortcuts.disabled(anyFieldFocused) }
+        .background { signalTypeShortcuts.disabled(anyFieldFocused) }
+        .background { noiseModeShortcuts.disabled(anyFieldFocused || !isNoiseSignalType) }
         .environment(\.theme, theme)
         .preferredColorScheme(appearanceSettings.mode == .dark ? .dark : .light)
         .contentShape(Rectangle())
@@ -694,6 +703,7 @@ struct ContentView: View {
         // selected segment with the accent (its WATERFALL/RTA tabs and its 1/1..1/48 banding row
         // alike), so one grey picker stacked under an accent-tinted one read as inconsistent (ADR 0005).
         .tint(theme.accent)
+        .help("Noise sub-mode — ⌥F Full-range · ⌥B Band-limited · ⌥O 1/3-Octave")
     }
 
     /// Occupies the same shared slot `frequencyControl`/`thirdOctaveFrequencyControl` do —
@@ -902,6 +912,24 @@ struct ContentView: View {
         .pickerStyle(.menu)
     }
 
+    /// A single bulk-mute toggle (⌥M), visible above the channel row so the safety-relevant
+    /// "kill output" is discoverable and mouse-reachable, not just a shortcut. The button *is*
+    /// its own shortcut target — no separate invisible view needed — and it's ungated (unlike
+    /// the picker keys) so the safety action always fires, even with a field focused. Its label
+    /// and tint reflect the *next* action: "Mute All" (danger) normally, "Unmute All" once every
+    /// channel is already muted.
+    private var bulkMuteControls: some View {
+        HStack(spacing: 8) {
+            Button(allChannelsMuted ? "Unmute All" : "Mute All") { toggleAllChannelsMuted() }
+                .tint(allChannelsMuted ? theme.accent : theme.danger)
+                .keyboardShortcut("m", modifiers: .option)
+                .help(allChannelsMuted ? "Unmute every channel (⌥M)" : "Mute every channel (⌥M)")
+
+            Spacer()
+        }
+        .buttonStyle(.bordered)
+    }
+
     private var channelRow: some View {
         @Bindable var signalSettings = signalSettings
         return ScrollView(.horizontal, showsIndicators: false) {
@@ -922,6 +950,7 @@ struct ContentView: View {
                             Text("Ø")
                         }
                         .toggleStyle(SolidToggleStyle(color: theme.accent))
+                        .help(phaseShortcutHelp(forChannel: index))
                     }
                     .padding(8)
                     // A channel-strip plate lifted above the `surface` panel (surfaceRaised,
@@ -953,6 +982,85 @@ struct ContentView: View {
         }
     }
 
+    /// Invisible buttons backing ⌥1–⌥0, toggling phase-reverse (Ø) on the first ten channels —
+    /// the Option-modified sibling of `channelMuteShortcuts`' bare 1–0 Mute keys, reusing the
+    /// same `muteShortcutKey` mapping. Gated by `anyFieldFocused` like the Mute keys, since
+    /// Option+digit can still emit a special character into a focused field.
+    private var channelPhaseShortcuts: some View {
+        @Bindable var signalSettings = signalSettings
+        return ForEach(signalSettings.channels.indices, id: \.self) { index in
+            if let key = Self.muteShortcutKey(forChannel: index) {
+                Button("") { signalSettings.channels[index].phaseReversed.toggle() }
+                    .keyboardShortcut(key, modifiers: .option)
+            }
+        }
+    }
+
+    /// Invisible buttons backing the ⌥-letter signal-type shortcuts (⌥S Sine, ⌥Q Square,
+    /// ⌥P Pink, ⌥W White, ⌥E Sweep). Assigning `signalType` forces output OFF per ADR 0003, and
+    /// the picker's own `.onChange` resyncs the noise drafts — so both happen for free here.
+    /// Gated by `anyFieldFocused` (see `body`): while a numeric field is focused an ⌥-letter is
+    /// a typed character, and firing it would also stop a running signal out from under the user.
+    private var signalTypeShortcuts: some View {
+        @Bindable var signalSettings = signalSettings
+        return ForEach(GeneratorKind.allCases) { type in
+            Button("") { signalSettings.signalType = type }
+                .keyboardShortcut(Self.signalTypeShortcutKey(type), modifiers: .option)
+        }
+    }
+
+    /// Invisible buttons backing the ⌥-letter noise sub-mode shortcuts (⌥F Full-range,
+    /// ⌥B Band-limited, ⌥O 1/3-Octave). Inert unless a noise color (Pink/White) is active and no
+    /// field is focused — gated via `anyFieldFocused || !isNoiseSignalType` by the caller (see
+    /// `body`) so it neither steals a typed ⌥-letter nor silently mutates the hidden draft.
+    private var noiseModeShortcuts: some View {
+        ForEach(NoiseMode.Family.allCases) { family in
+            Button("") { activeNoiseDraft.family.wrappedValue = family }
+                .keyboardShortcut(Self.noiseModeShortcutKey(family), modifiers: .option)
+        }
+    }
+
+    /// The ⌥-letter key for a signal type — mnemonic where possible (Sine/Pink/White), with the
+    /// two other S-words disambiguated: sQuare, swEep.
+    private static func signalTypeShortcutKey(_ type: GeneratorKind) -> KeyEquivalent {
+        switch type {
+        case .sine: "s"
+        case .square: "q"
+        case .pink: "p"
+        case .white: "w"
+        case .sweep: "e"
+        }
+    }
+
+    /// The ⌥-letter key for a noise sub-mode — Full-range, Band-limited, 1/3-Octave.
+    private static func noiseModeShortcutKey(_ family: NoiseMode.Family) -> KeyEquivalent {
+        switch family {
+        case .fullRange: "f"
+        case .bandLimited: "b"
+        case .thirdOctave: "o"
+        }
+    }
+
+    /// True when every channel is muted — the state that flips the ⌥M toggle from "mute all"
+    /// (its normal action) to "unmute all". Empty channel list reads as not-all-muted so the
+    /// toggle stays in its default "mute all" direction.
+    private var allChannelsMuted: Bool {
+        !signalSettings.channels.isEmpty && signalSettings.channels.allSatisfy(\.muted)
+    }
+
+    /// ⌥M's action: mute every channel, unless every channel is already muted, in which case
+    /// unmute all. Assigns `channels` once (not per element) so `SignalSettings.channels`'
+    /// `didSet` dual-write to the render core + `SettingsStore` fires a single time.
+    private func toggleAllChannelsMuted() {
+        setAllChannelsMuted(!allChannelsMuted)
+    }
+
+    private func setAllChannelsMuted(_ muted: Bool) {
+        var updated = signalSettings.channels
+        for i in updated.indices { updated[i].muted = muted }
+        signalSettings.channels = updated
+    }
+
     /// The single digit key that toggles a given channel's Mute — "1"–"9" for the first nine
     /// channels, "0" for the tenth. `nil` past ten: single digits run out, and there's no
     /// clean second key that beats just clicking.
@@ -968,6 +1076,13 @@ struct ContentView: View {
         switch Self.muteShortcutKey(forChannel: index) {
         case .some(let key): "Toggle CH \(index + 1) mute (\(key.character))"
         case .none: "Toggle CH \(index + 1) mute"
+        }
+    }
+
+    private func phaseShortcutHelp(forChannel index: Int) -> String {
+        switch Self.muteShortcutKey(forChannel: index) {
+        case .some(let key): "Toggle CH \(index + 1) phase (⌥\(key.character))"
+        case .none: "Toggle CH \(index + 1) phase"
         }
     }
 
