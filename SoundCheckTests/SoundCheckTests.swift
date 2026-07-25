@@ -289,6 +289,40 @@ struct SoundCheckTests {
         #expect(maxDelta < 0.3)
     }
 
+    @Test func signalSwitchedWhileOffIsAdoptedOnTheFirstOn() async throws {
+        // Regression (see SignalRenderCore.render's frame-loop adoption): the audio engine
+        // is stopped whenever output is OFF, so render() isn't called then — a generator
+        // switch made while OFF must be adopted on the *first* ON, not only after a full
+        // OFF/ON cycle. Previously the first ON rendered the previously-active generator
+        // (.sine on launch) because the frame-loop adoption ran *after* the ramp step had
+        // already lifted rampGain off 0, so the `rampGain == 0` check missed the first frame.
+        let core = SignalRenderCore()
+        let sampleRate = 48000.0
+
+        // Exactly the launch state: a fresh core defaults generatorKind to .sine with
+        // rampGain == 0 and activeGeneratorKind == .sine (never rendered). Switch to white
+        // noise while still OFF, as selecting White does, without any priming render.
+        core.updateParameters {
+            $0.generatorKind = .white
+            $0.levelDbfs = 0
+            $0.running = false
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+
+        // First ON, straight through renderToArrays (no renderSteadyState priming).
+        core.updateParameters { $0.running = true }
+        let rampFrames = Int(0.015 * sampleRate) + 1
+        let channels = Self.renderToArrays(core, frameCount: rampFrames + 200, channelCount: 1, sampleRate: sampleRate)
+        let steady = Array(channels[0].suffix(200))
+
+        // White noise makes large sample-to-sample jumps; the buggy output (a smooth 1kHz
+        // sine) has max |Δ| ≈ 0.14 at full scale. A large max delta confirms the white
+        // generator — not the stale sine default — is what plays on the first ON.
+        let maxDelta = zip(steady, steady.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        #expect(maxDelta > 0.3)
+    }
+
     @Test func perChannelMuteAndPhaseApplyCorrectly() async throws {
         let core = SignalRenderCore()
         core.updateParameters {
@@ -1080,15 +1114,13 @@ struct SoundCheckTests {
         return buffers.map { Array($0) }
     }
 
-    /// Renders steady-state output for the generator already configured on `core`, working around
-    /// the render loop only adopting `RenderParameters.generatorKind` on a frame where `rampGain`
-    /// is exactly 0. A fresh core starts at `rampGain == 0` with `activeGeneratorKind == .sine`,
-    /// but the ramp is stepped *before* the adoption check, so the first `running == true` frame
-    /// bumps `rampGain` above 0 before the kind is ever adopted -- leaving the core stuck rendering
-    /// its `.sine` default. This primes it with a short `running == false` block (where `rampGain`
-    /// stays 0 so the real kind is adopted every frame), then ramps up and renders the measured
-    /// block. Use this instead of `renderToArrays` whenever a test asserts on a *non-sine*
-    /// generator's output. (Sweep/square tests already prime by hand via a 1-frame warm-up.)
+    /// Renders steady-state output for the generator already configured on `core`, priming with a
+    /// short `running == false` block before ramping up. This originally worked around a render-loop
+    /// bug (the generator swap was adopted *after* the per-frame ramp step, so a fresh core's first
+    /// ON stayed stuck on its `.sine` default); that bug is now fixed — `render()` adopts before the
+    /// ramp step, so `renderToArrays` alone renders the configured generator on the first ON (see
+    /// `signalSwitchedWhileOffIsAdoptedOnTheFirstOn`). The priming block is now belt-and-suspenders
+    /// and harmless; existing non-sine tests keep using it, new ones may render straight through.
     private static func renderSteadyState(
         _ core: SignalRenderCore, frameCount: Int, channelCount: Int, sampleRate: Double
     ) -> [[Float]] {

@@ -609,15 +609,9 @@ final class SignalRenderCore: @unchecked Sendable {
         // `running` can't change mid-callback, so once it's 0 at the top of a callback it
         // stays 0 for the whole block — safe to test once here instead of per frame. This is
         // what keeps an idle (OFF) engine from burning CPU synthesizing discarded samples.
+        // (No generator-swap adoption here: the frame loop below adopts at silence, both on
+        // the OFF fade-out and on the next ON, so a switch made while OFF is picked up there.)
         if !currentParameters.running && rampGain == 0 {
-            // Adopt any pending generator swap now that we're silent (ADR 0003 forces a stop
-            // on switch), edge-triggered — this replaces the per-frame adoption the frame
-            // loop's `rampGain == 0` branch used to do, so ON still starts on the newly
-            // selected generator.
-            if activeGeneratorKind != currentParameters.generatorKind {
-                activeGeneratorKind = currentParameters.generatorKind
-                generator(for: activeGeneratorKind).reset()
-            }
             for channel in 0..<channelCount {
                 let buffer = channelBuffer(channel)
                 for frame in 0..<frameCount { buffer[frame] = 0 }
@@ -646,16 +640,24 @@ final class SignalRenderCore: @unchecked Sendable {
         }
 
         for frame in 0..<frameCount {
+            // Adopt any pending generator swap at silence, BEFORE the ramp step lifts
+            // `rampGain` off 0 — otherwise the first ON frame would render the
+            // previously-active generator (the ramp increment below moves `rampGain`
+            // past 0 before the old post-step check could see it). This is now the sole
+            // adoption path that fires on ON, since the engine is stopped while output is
+            // OFF (see AudioEngineController) and the OFF-branch adoption can't run without
+            // callbacks. Unconditional reset at silence also gives Sweep its restart-from-20Hz
+            // on every fresh ON (ADR 0004).
+            if rampGain == 0 {
+                activeGeneratorKind = currentParameters.generatorKind
+                generator(for: activeGeneratorKind).reset()
+            }
+
             let targetGain: Double = currentParameters.running ? 1 : 0
             if rampGain < targetGain {
                 rampGain = min(rampGain + rampStep, targetGain)
             } else if rampGain > targetGain {
                 rampGain = max(rampGain - rampStep, targetGain)
-            }
-
-            if rampGain == 0 {
-                activeGeneratorKind = currentParameters.generatorKind
-                generator(for: activeGeneratorKind).reset()
             }
 
             let generator = self.generator(for: activeGeneratorKind)
