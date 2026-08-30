@@ -10,7 +10,7 @@ V2 is in progress on the [V2 map](https://github.com/vk0eppel/SoundCheck/issues/
 
 ## Requirements
 
-- macOS, Xcode (SwiftUI + AVAudioEngine + Core Audio). iOS portability is considered but not designed for yet.
+- macOS 14 (Sonoma) or later, Xcode (SwiftUI + AVAudioEngine + Core Audio). iOS portability is considered but not designed for yet.
 
 ## Building and testing
 
