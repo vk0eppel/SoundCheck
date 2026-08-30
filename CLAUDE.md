@@ -21,6 +21,8 @@ The project uses `PBXFileSystemSynchronizedRootGroup` (Xcode 16+ synchronized fo
 
 The Xcode project's `SUPPORTED_PLATFORMS` includes iOS/visionOS from the template default, but the app is designed macOS-first (see below) — iOS portability is a deferred, unscoped concern. Anything gated behind Core Audio's `AudioObject`/HAL APIs is macOS-only and wrapped in `#if os(macOS)`.
 
+Minimum OS is **macOS 14.0 / iOS 17.0 / visionOS 1.0** — not arbitrary: the binding constraint is `@Observable` (macOS 14+), used across the model layer; there are no `@available`/`#available` gates and no stdlib `Atomic` usage, so nothing pushes it higher. It was previously set to a needlessly high 26.5 with no code requiring it; lowered to the real floor and verified with both Debug and Release (`-O`/whole-module) builds. Re-check by building at a lower target if `@Observable` is ever dropped.
+
 ## Documentation to read first
 
 - `docs/v1-spec.md` — the spec of record: signal types, screen layout, every control's exact behavior, the audio engine architecture, and a running decisions log. Read this before changing UI or audio behavior.
