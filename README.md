@@ -10,7 +10,28 @@ V2 is in progress on the [V2 map](https://github.com/vk0eppel/SoundCheck/issues/
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later, Xcode (SwiftUI + AVAudioEngine + Core Audio). iOS portability is considered but not designed for yet.
+- **macOS 14 (Sonoma) or later**
+- **Any Mac — Apple Silicon or Intel.** Releases ship as a universal binary.
+- An audio output device (built-in speakers, headphones, USB interface, etc.). SoundCheck plays test signals only — it never records, so no microphone access is needed.
+
+## Install
+
+1. Download the latest `SoundCheck-vX.Y.Z.zip` from the [**Releases**](https://github.com/vk0eppel/SoundCheck/releases/latest) page.
+2. Double-click the `.zip` to unpack `SoundCheck.app`, then drag it into your **Applications** folder.
+3. **First launch.** The app is signed for development but **not notarized by Apple**, so macOS Gatekeeper blocks it the first time. To open it anyway:
+   - **Right-click** (or Control-click) `SoundCheck.app` → **Open**, then click **Open** in the dialog. macOS remembers your choice, so later launches are ordinary double-clicks.
+   - If no **Open** button appears, clear the quarantine flag in Terminal and try again:
+     ```
+     xattr -dr com.apple.quarantine /Applications/SoundCheck.app
+     ```
+
+> **Heads up:** because these builds use an Apple *Development* certificate and aren't notarized, some Macs may refuse to open the app at all rather than just warn. If the steps above don't work, [build from source](#building-and-testing) instead — a notarized, friction-free build is future work.
+
+## Running
+
+1. Launch SoundCheck and pick your **Output Device**.
+2. Choose a signal type (**sine**, **pink**, or **white**), set the frequency (sine) and level, and flip the generator **On**.
+3. Use the per-channel **mute / phase** controls to send the signal where you need it.
 
 ## Building and testing
 
@@ -19,7 +40,7 @@ xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platfo
 xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platform=macOS' test
 ```
 
-Or open `SoundCheck.xcodeproj` in Xcode and use Cmd-R / Cmd-U.
+Or open `SoundCheck.xcodeproj` in Xcode and use Cmd-R / Cmd-U. Requires Xcode (SwiftUI + AVAudioEngine + Core Audio); iOS portability is considered but not designed for yet.
 
 ## Documentation
 
