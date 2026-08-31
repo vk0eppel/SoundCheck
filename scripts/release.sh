@@ -29,11 +29,17 @@ BUILD="$ROOT/build_release"
 DIST="$ROOT/dist"
 ZIP="$DIST/SoundCheck-$TAG.zip"
 
-echo "==> Building signed Release for $TAG (MARKETING_VERSION=$VERSION)"
+echo "==> Building signed universal Release for $TAG (MARKETING_VERSION=$VERSION)"
+# ARCHS/ONLY_ACTIVE_ARCH are load-bearing: a concrete `-destination platform=macOS`
+# otherwise builds only the host arch (arm64 on the dev machine), which is how
+# releases up to v0.2.4 shipped arm64-only and wouldn't launch on Intel Macs.
+# The project's Release config also sets these, but the concrete destination
+# overrides it, so the command line must repeat them.
 rm -rf "$BUILD"
 xcodebuild -project "$ROOT/SoundCheck.xcodeproj" -scheme SoundCheck \
   -configuration Release -destination 'platform=macOS' \
   -derivedDataPath "$BUILD" \
+  ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$IDENTITY" \
   DEVELOPMENT_TEAM="$TEAM" \
@@ -46,6 +52,14 @@ xcodebuild -project "$ROOT/SoundCheck.xcodeproj" -scheme SoundCheck \
 APP="$BUILD/Build/Products/Release/SoundCheck.app"
 echo "==> Verifying signature"
 codesign --verify --strict --verbose=2 "$APP"
+
+echo "==> Verifying universal binary (arm64 + x86_64)"
+ARCHS_BUILT="$(lipo -archs "$APP/Contents/MacOS/SoundCheck")"
+case " $ARCHS_BUILT " in
+  *" arm64 "*) case " $ARCHS_BUILT " in *" x86_64 "*) : ;; *) UNIVERSAL_FAIL=1 ;; esac ;;
+  *) UNIVERSAL_FAIL=1 ;;
+esac
+[ -z "${UNIVERSAL_FAIL:-}" ] || { echo "ERROR: app is not universal (got: $ARCHS_BUILT)" >&2; exit 1; }
 
 echo "==> Zipping -> $ZIP"
 mkdir -p "$DIST"; rm -f "$ZIP"
