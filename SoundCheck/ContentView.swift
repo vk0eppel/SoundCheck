@@ -153,6 +153,38 @@ private struct LEDIndicator: View {
     }
 }
 
+/// A small etched key legend — a control's keyboard binding printed onto its face, the way
+/// hardware gear silkscreens its key legends rather than hiding them in a help menu. Monospace
+/// so it reads unmistakably as "a key"; quiet (`textDim` on the chassis tone, outlined) so it
+/// labels without competing with the control it annotates. `accent` lifts it to cyan for the
+/// ON/OFF button's armed standby state, where a neutral cap would sink into the tinted fill.
+private struct KeyCap: View {
+    @Environment(\.theme) private var theme
+    let label: String
+    var accent: Bool = false
+
+    init(_ label: String, accent: Bool = false) {
+        self.label = label
+        self.accent = accent
+    }
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(accent ? theme.accent : theme.textDim)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(theme.surfaceRaised, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(accent ? theme.accent.opacity(0.5) : theme.border, lineWidth: 1)
+            )
+            // Not a control -- a printed legend. Kept out of the accessibility tree so
+            // VoiceOver reads the annotated control, not a stray "1" / "Space" token.
+            .accessibilityHidden(true)
+    }
+}
+
 /// A titled grouping, evoking a labeled zone on an instrument's front panel — not
 /// decoration: it separates "what's being generated" from "where it's going."
 private struct PanelSection<Content: View>: View {
@@ -373,13 +405,29 @@ struct ContentView: View {
         VStack(spacing: 16) {
             PanelSection(title: "GENERATOR") {
                 VStack(spacing: 16) {
-                    Picker("", selection: $signalSettings.signalType) {
-                        ForEach(GeneratorKind.allCases) { type in
-                            Text(type.rawValue).tag(type)
+                    VStack(spacing: 4) {
+                        Picker("", selection: $signalSettings.signalType) {
+                            ForEach(GeneratorKind.allCases) { type in
+                                Text(type.rawValue).tag(type)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .tint(theme.accent)
+
+                        // A silkscreened legend row tucked under the picker, one ⌥-letter per
+                        // segment. Deliberately box-less faint text (not KeyCap) so it reads as
+                        // a printed label under each key, not a second row of tappable buttons.
+                        // Equal-width columns line each up under its segment.
+                        HStack(spacing: 0) {
+                            ForEach(GeneratorKind.allCases) { type in
+                                Text("⌥" + String(Self.signalTypeShortcutKey(type).character).uppercased())
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(theme.textFaint)
+                                    .frame(maxWidth: .infinity)
+                                    .accessibilityHidden(true)
+                            }
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .tint(theme.accent)
                     .help("Signal type — ⌥S Sine · ⌥Q Square · ⌥P Pink · ⌥W White · ⌥E Sweep")
                     .onChange(of: signalSettings.signalType) { _, _ in
                         // Resync the transient draft text to whichever color is now active --
@@ -537,6 +585,7 @@ struct ContentView: View {
                 Text(signalSettings.isRunning ? "ON" : "OFF")
                     .font(.title2.weight(.bold))
                     .tracking(3)
+                KeyCap("Space", accent: !signalSettings.isRunning)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
@@ -601,23 +650,10 @@ struct ContentView: View {
 
             // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
             HStack(spacing: 4) {
-                Button {
-                    stepFrequency(-1)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .help("Previous 1/3-octave band (←)")
-
-                Button {
-                    stepFrequency(1)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .help("Next 1/3-octave band (→)")
+                arrowStepper(systemImage: "chevron.left", key: .leftArrow, cap: "←",
+                             help: "Previous 1/3-octave band (←)", capBelow: true) { stepFrequency(-1) }
+                arrowStepper(systemImage: "chevron.right", key: .rightArrow, cap: "→",
+                             help: "Next 1/3-octave band (→)", capBelow: true) { stepFrequency(1) }
             }
             .buttonStyle(.bordered)
         }
@@ -656,23 +692,10 @@ struct ContentView: View {
 
             // Left/right, matching the left-arrow/right-arrow keyboard shortcuts below.
             HStack(spacing: 4) {
-                Button {
-                    stepThirdOctaveBand(-1)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .help("Previous 1/3-octave band (←)")
-
-                Button {
-                    stepThirdOctaveBand(1)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .help("Next 1/3-octave band (→)")
+                arrowStepper(systemImage: "chevron.left", key: .leftArrow, cap: "←",
+                             help: "Previous 1/3-octave band (←)", capBelow: true) { stepThirdOctaveBand(-1) }
+                arrowStepper(systemImage: "chevron.right", key: .rightArrow, cap: "→",
+                             help: "Next 1/3-octave band (→)", capBelow: true) { stepThirdOctaveBand(1) }
             }
             .buttonStyle(.bordered)
         }
@@ -789,23 +812,10 @@ struct ContentView: View {
                 .foregroundStyle(theme.textDim)
 
             HStack(spacing: 4) {
-                Button {
-                    adjustSweepDuration(-1)
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.leftArrow, modifiers: [])
-                .help("Decrease duration by 1s (←)")
-
-                Button {
-                    adjustSweepDuration(1)
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.rightArrow, modifiers: [])
-                .help("Increase duration by 1s (→)")
+                arrowStepper(systemImage: "minus", key: .leftArrow, cap: "←",
+                             help: "Decrease duration by 1s (←)", capBelow: true) { adjustSweepDuration(-1) }
+                arrowStepper(systemImage: "plus", key: .rightArrow, cap: "→",
+                             help: "Increase duration by 1s (→)", capBelow: true) { adjustSweepDuration(1) }
             }
             .buttonStyle(.bordered)
         }
@@ -831,25 +841,41 @@ struct ContentView: View {
 
             // + above -, matching the up-arrow/down-arrow keyboard shortcuts below.
             VStack(spacing: 4) {
-                Button {
-                    adjustLevel(1)
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.upArrow, modifiers: [])
-                .help("Increase level by 1dB (↑)")
-
-                Button {
-                    adjustLevel(-1)
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
-                }
-                .keyboardShortcut(.downArrow, modifiers: [])
-                .help("Decrease level by 1dB (↓)")
+                arrowStepper(systemImage: "plus", key: .upArrow, cap: "↑",
+                             help: "Increase level by 1dB (↑)", capBelow: false) { adjustLevel(1) }
+                arrowStepper(systemImage: "minus", key: .downArrow, cap: "↓",
+                             help: "Decrease level by 1dB (↓)", capBelow: false) { adjustLevel(-1) }
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    /// A stepper button with its arrow-key legend silkscreened alongside — the same KeyCap
+    /// language as the rest of the panel, applied to the frequency ‹ ›, duration ‹ ›, and level
+    /// +/- steppers. `capBelow` prints the cap under the button (horizontal ‹ › pairs) vs. trailing
+    /// it (the vertical +/- pair), so the cap always sits on the side the key's motion points.
+    /// `.buttonStyle(.bordered)` still comes from the enclosing stack via the environment; the cap
+    /// is a plain legend, unaffected.
+    @ViewBuilder
+    private func arrowStepper(
+        systemImage: String,
+        key: KeyEquivalent,
+        cap: String,
+        help: String,
+        capBelow: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        let button = Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: Self.stepperButtonSize, height: Self.stepperButtonSize)
+        }
+        .keyboardShortcut(key, modifiers: [])
+        .help(help)
+
+        if capBelow {
+            VStack(spacing: 3) { button; KeyCap(cap) }
+        } else {
+            HStack(spacing: 3) { button; KeyCap(cap) }
         }
     }
 
@@ -920,7 +946,12 @@ struct ContentView: View {
     /// channel is already muted.
     private var bulkMuteControls: some View {
         HStack(spacing: 8) {
-            Button(allChannelsMuted ? "Unmute All" : "Mute All") { toggleAllChannelsMuted() }
+            Button { toggleAllChannelsMuted() } label: {
+                HStack(spacing: 6) {
+                    Text(allChannelsMuted ? "Unmute All" : "Mute All")
+                    KeyCap("⌥M")
+                }
+            }
                 .tint(allChannelsMuted ? theme.accent : theme.danger)
                 .keyboardShortcut("m", modifiers: .option)
                 .help(allChannelsMuted ? "Unmute every channel (⌥M)" : "Mute every channel (⌥M)")
@@ -935,7 +966,7 @@ struct ContentView: View {
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(signalSettings.channels.indices, id: \.self) { index in
-                    VStack(spacing: 6) {
+                    VStack(spacing: 5) {
                         Text("CH \(index + 1)")
                             .font(.caption2.weight(.semibold))
                             .tracking(1)
@@ -945,12 +976,17 @@ struct ContentView: View {
                         }
                         .toggleStyle(SolidToggleStyle(color: theme.danger))
                         .help(muteShortcutHelp(forChannel: index))
+                        // The digit key that toggles this strip's Mute is silkscreened right
+                        // under it (channels 1–10 only). ⌥+that digit toggles Ø, printed under
+                        // Ø below — so each cap sits on the control it fires.
+                        channelKeyLegend(channelDigit(forIndex: index))
 
                         Toggle(isOn: $signalSettings.channels[index].phaseReversed) {
                             Text("Ø")
                         }
                         .toggleStyle(SolidToggleStyle(color: theme.accent))
                         .help(phaseShortcutHelp(forChannel: index))
+                        channelKeyLegend(channelDigit(forIndex: index).map { "⌥" + $0 })
                     }
                     .padding(8)
                     // A channel-strip plate lifted above the `surface` panel (surfaceRaised,
@@ -963,7 +999,25 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(height: 100)
+        .frame(height: 128)
+    }
+
+    /// The bare digit key ("1"…"9","0") that toggles a channel's Mute, or nil past channel ten
+    /// (which has no single-key shortcut). Reuses the same `muteShortcutKey` mapping the invisible
+    /// shortcut buttons use, so the printed legend can never drift from what the key actually does.
+    private func channelDigit(forIndex index: Int) -> String? {
+        Self.muteShortcutKey(forChannel: index).map { String($0.character) }
+    }
+
+    /// A channel strip's key legend, or a same-height blank past channel ten so every strip stays
+    /// flush regardless of whether it has a shortcut.
+    @ViewBuilder
+    private func channelKeyLegend(_ label: String?) -> some View {
+        if let label {
+            KeyCap(label)
+        } else {
+            Color.clear.frame(width: 1, height: 15)
+        }
     }
 
     /// Invisible buttons backing the number-key shortcuts that toggle the first ten channels'
