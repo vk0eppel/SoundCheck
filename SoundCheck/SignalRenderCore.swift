@@ -118,6 +118,74 @@ final class SweepGenerator: SignalGenerator {
     }
 }
 
+/// A repeating click for checking inter-speaker delay settings by ear — see docs/spec.md's
+/// "Addendum: click generator". Each click is a positive-going raised-cosine (Hann) pulse
+/// `pulseWidthSeconds` wide, sampled from the same continuous shape at every sample rate and
+/// centered on a sample so its peak is exactly 1 (Level is the pulse's *peak*, not RMS).
+///
+/// Timing is measured from the last pulse: a pulse fires once `samplesSinceTrigger` reaches
+/// the *current* interval, so a live interval change takes effect immediately — lengthening
+/// pushes the next click out, and shortening past what's already elapsed fires it on the next
+/// sample. `reset()` (called at silence on every ON, ADR 0004) re-primes the first pulse to
+/// fire `firstPulseDelaySeconds` after ON — just after the 15ms start ramp completes, so the
+/// first click plays at full level instead of being swallowed by the fade-in.
+final class ClickGenerator: SignalGenerator {
+    static let pulseWidthSeconds: Double = 0.0002
+    static let firstPulseDelaySeconds: Double = 0.020
+
+    private var samplesSinceTrigger: Double = 0
+    private var hasTriggeredSinceReset = false
+    // Position within the pulse currently playing, in samples relative to its center; nil
+    // between pulses.
+    private var pulseOffset: Int?
+
+    func nextSample(parameters: RenderParameters, sampleRate: Double) -> Double {
+        let halfWidthSamples = Int(Self.pulseWidthSeconds / 2 * sampleRate)
+        let triggerSeconds = hasTriggeredSinceReset
+            ? max(parameters.clickIntervalSeconds, ClickInterval.range.lowerBound)
+            : Self.firstPulseDelaySeconds
+        if samplesSinceTrigger >= triggerSeconds * sampleRate {
+            samplesSinceTrigger = 0
+            hasTriggeredSinceReset = true
+            pulseOffset = -halfWidthSamples
+        }
+        samplesSinceTrigger += 1
+
+        guard let offset = pulseOffset else { return 0 }
+        pulseOffset = offset < halfWidthSamples ? offset + 1 : nil
+        let t = Double(offset) / sampleRate
+        return 0.5 * (1 + cos(2 * .pi * t / Self.pulseWidthSeconds))
+    }
+
+    func reset() {
+        samplesSinceTrigger = 0
+        hasTriggeredSinceReset = false
+        pulseOffset = nil
+    }
+}
+
+/// The Click interval's range, arrow step, and commit rule, shared by `ContentView`'s Interval
+/// field and its tests. Values are held on a whole-tenths grid (computed from an integer tenth
+/// count, not by repeatedly adding 0.1) so stepping never accumulates float drift.
+enum ClickInterval {
+    static let range: ClosedRange<Double> = 0.2...3.0
+    static let defaultSeconds: Double = 1.0
+
+    /// A typed value, snapped to the nearest 0.1s and clamped to `range`.
+    static func committed(_ seconds: Double) -> Double {
+        clamped(tenths: (seconds * 10).rounded())
+    }
+
+    /// One 0.1s arrow step up (`direction > 0`) or down, clamped to `range`.
+    static func stepped(from seconds: Double, by direction: Int) -> Double {
+        clamped(tenths: (seconds * 10).rounded() + Double(direction))
+    }
+
+    private static func clamped(tenths: Double) -> Double {
+        min(max(tenths / 10, range.lowerBound), range.upperBound)
+    }
+}
+
 /// Owns "rebuild the band-limited/1/3-octave filter when `NoiseMode` changes, else reuse"
 /// and "dispatch the raw sample through whichever filter (or none) is currently active" —
 /// the ~25-line pattern `PinkNoiseGenerator` and `WhiteNoiseGenerator` used to each implement
@@ -248,6 +316,7 @@ enum GeneratorKind: String, CaseIterable, Identifiable, Hashable, Codable, Senda
     case pink = "PINK"
     case white = "WHITE"
     case sweep = "SWEEP"
+    case click = "CLICK"
 
     var id: String { rawValue }
 }
@@ -551,6 +620,7 @@ struct RenderParameters: Equatable, Sendable {
     var pinkNoiseMode: NoiseMode = .fullRange
     var whiteNoiseMode: NoiseMode = .fullRange
     var sweepDurationSeconds: Double = 10
+    var clickIntervalSeconds: Double = ClickInterval.defaultSeconds
 }
 
 // MARK: - Render core
@@ -565,7 +635,7 @@ final class SignalRenderCore: @unchecked Sendable {
 
     // Audio-thread-only state: only ever touched inside `render`, which per the architecture
     // decided in #2 is called from a single real-time render callback, never concurrently.
-    // The five generators are `let` bindings to types the compiler already infers as
+    // The six generators are `let` bindings to types the compiler already infers as
     // `Sendable` (each is a `final class` with no non-Sendable stored state), so — unlike
     // the `var`s below, which are mutated from `render` and still need it — they don't need
     // `nonisolated(unsafe)`.
@@ -574,6 +644,7 @@ final class SignalRenderCore: @unchecked Sendable {
     private let whiteGenerator = WhiteNoiseGenerator()
     private let sweepGenerator = SweepGenerator()
     private let squareGenerator = SquareGenerator()
+    private let clickGenerator = ClickGenerator()
     nonisolated(unsafe) private var rampGain: Double = 0
     // Only adopted from `RenderParameters.generatorKind` once `rampGain` reaches silence —
     // otherwise a signal-type switch mid-ramp would audibly fade out the *new* generator
@@ -679,6 +750,7 @@ final class SignalRenderCore: @unchecked Sendable {
         case .white: whiteGenerator
         case .sweep: sweepGenerator
         case .square: squareGenerator
+        case .click: clickGenerator
         }
     }
 

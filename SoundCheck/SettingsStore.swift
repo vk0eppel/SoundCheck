@@ -21,6 +21,32 @@ struct SettingsSnapshot: Codable, Equatable {
     var pinkNoiseMode: NoiseMode = .fullRange
     var whiteNoiseMode: NoiseMode = .fullRange
     var sweepDurationSeconds: Double = 10
+    var clickIntervalSeconds: Double = ClickInterval.defaultSeconds
+}
+
+extension SettingsSnapshot {
+    /// Tolerant decoding: a snapshot saved by an older build lacks any field added since (e.g.
+    /// `clickIntervalSeconds`), and synthesized `Codable` would reject it outright — making
+    /// `SettingsStore` silently reset *every* setting on upgrade. Each missing (or
+    /// undecodable) key instead falls back to its default, keeping everything else.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = SettingsSnapshot()
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        self.init(
+            signalType: value(.signalType, defaults.signalType),
+            frequencyHz: value(.frequencyHz, defaults.frequencyHz),
+            levelDbfs: value(.levelDbfs, defaults.levelDbfs),
+            selectedDeviceUID: value(.selectedDeviceUID, defaults.selectedDeviceUID),
+            channelStatesByDeviceUID: value(.channelStatesByDeviceUID, defaults.channelStatesByDeviceUID),
+            pinkNoiseMode: value(.pinkNoiseMode, defaults.pinkNoiseMode),
+            whiteNoiseMode: value(.whiteNoiseMode, defaults.whiteNoiseMode),
+            sweepDurationSeconds: value(.sweepDurationSeconds, defaults.sweepDurationSeconds),
+            clickIntervalSeconds: value(.clickIntervalSeconds, defaults.clickIntervalSeconds)
+        )
+    }
 }
 
 /// Persists SoundCheck's last-used settings across launches, per docs/spec.md's
