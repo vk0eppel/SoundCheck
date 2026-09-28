@@ -75,8 +75,8 @@ final class SignalSettings {
     }
 
     // Not in issue #31's original property list (written before White gained its own noise
-    // modes) but symmetrical with `pinkNoiseMode` now that it has — see V2.1's White noise
-    // modes addendum in CLAUDE.md.
+    // modes) but symmetrical with `pinkNoiseMode` now that it has — see docs/spec.md's "Addendum:
+    // White noise modes".
     var whiteNoiseMode: NoiseMode {
         didSet {
             guard whiteNoiseMode != oldValue else { return }

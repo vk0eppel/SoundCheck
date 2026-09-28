@@ -12,7 +12,7 @@
 import Foundation
 
 /// The 31 ISO 266 preferred 1/3-octave center frequencies, 20Hz-20kHz.
-/// Shared by the frequency field's prev/next stepping and (V2) the 1/3-octave band selector.
+/// Shared by the frequency field's prev/next stepping and the 1/3-octave band selector.
 enum ThirdOctaveBands {
     static let centerFrequenciesHz: [Double] = [
         20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160,

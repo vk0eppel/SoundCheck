@@ -16,7 +16,7 @@ import Observation
 import os
 
 /// Wraps `SignalRenderCore` in a real `AVAudioSourceNode`/`AVAudioEngine` graph and binds
-/// output to a specific Core Audio device, per the architecture in docs/v1-spec.md: stays
+/// output to a specific Core Audio device, per the architecture in docs/spec.md: stays
 /// inside AVAudioEngine, overriding the output node's AudioUnit's current-device property.
 @MainActor
 @Observable

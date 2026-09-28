@@ -45,8 +45,8 @@ final class SineGenerator: SignalGenerator {
 /// applied in a narrow window around each of its two discontinuities per cycle (rising at
 /// phase 0, falling at phase 0.5) — a naive `sign()`-based square aliases at generation
 /// time (its infinite odd-harmonic series folds harmonics above Nyquist back into the
-/// audible range), which no filter applied afterward can undo. See docs/v1-spec.md's "V2
-/// addendum: square wave" for why PolyBLEP was chosen over additive synthesis or
+/// audible range), which no filter applied afterward can undo. See docs/spec.md's
+/// "Addendum: square wave" for why PolyBLEP was chosen over additive synthesis or
 /// oversampling. Implements `SignalGenerator` in its narrowest form (frequency + sample
 /// rate only, default no-op `reset()`) — per ADR 0004's note, the protocol's widening
 /// anticipated square wave needing a duty-cycle parameter, but duty cycle ended up fixed,
@@ -82,7 +82,7 @@ final class SquareGenerator: SignalGenerator {
 }
 
 /// A continuous logarithmic sweep across the app's fixed 20Hz-20kHz range — see
-/// docs/v1-spec.md's "V2 addendum: sine sweep". `elapsedSamples` is audio-thread-only
+/// docs/spec.md's "Addendum: sine sweep". `elapsedSamples` is audio-thread-only
 /// state tracking position within the configured `sweepDurationSeconds`; instantaneous
 /// frequency is `20 * (20000/20)^t` where `t` is elapsed time normalized by duration.
 /// Reaching `t = 1.0` wraps instantly back to `t = 0` (an abrupt frequency drop, not a
