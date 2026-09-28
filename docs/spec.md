@@ -12,36 +12,48 @@ This document started as the spec for the first build (the "V1" planning milesto
 - **Filtered noise, sweep, square** (planned on the [second wayfinder map](https://github.com/vk0eppel/SoundCheck/issues/12)): band-limited and 1/3-octave pink noise — see "Addendum: pink noise modes"; White noise gained the same modes — see "Addendum: White noise modes"; sine sweep — see "Addendum: sine sweep"; square wave — see "Addendum: square wave".
 - **Click generator** ([issue #50](https://github.com/vk0eppel/SoundCheck/issues/50)): a repeating click for checking inter-speaker delay settings by ear — see "Addendum: click generator".
 
-## Core signal types
+## Signal types
+
+The first build shipped Sine, Pink, and White (full-band only); the rest came later — each links to its addendum below.
 
 | Signal | Parameters |
 |---|---|
 | Sine wave | Frequency (Hz), Level (dBFS) |
-| Pink noise | Level (dBFS) — full-band 20Hz-20kHz |
-| White noise | Level (dBFS) — full-band 20Hz-20kHz |
+| Square wave | Frequency (Hz), Level (dBFS) — see "Addendum: square wave" |
+| Pink noise | Mode (Full-range / Band-limited / 1/3-Octave) + that mode's range or band, Level (dBFS) — see "Addendum: pink noise modes" |
+| White noise | Same modes as Pink — see "Addendum: White noise modes" |
+| Sine sweep | Duration (s), Level (dBFS) — log 20Hz–20kHz, looping — see "Addendum: sine sweep" |
+| Click | Interval (s), Level (dBFS, pulse peak) — see "Addendum: click generator" |
 
 ## Screen layout
 
 ```
-┌─────────────────────────────────────────────┐
-│ GENERATOR                                    │
-│  [ SINE | PINK | WHITE ]   ← signal selector │
-│              ┌───────────┐                   │
-│              │ ● ON/OFF  │  ← big toggle      │
-│              └───────────┘                   │
-│  Frequency:  [ 1000 ▾] Hz       ◀ ▶           │  (sine only; ▾ = band dropdown; space reserved when hidden)
-│  Level:      [ -20 ] dBFS        [+]          │
-│                                    [-]         │
-├───────────────────────────────────────────────┤
-│ OUTPUT                                        │
-│  Output Device:  [ MOTU 8A ▾ ]                │
-│  CH1 [Mute][Ø]  CH2 [Mute][Ø]  ...  ← scroll  │
-├───────────────────────────────────────────────┤
-│  48.0 kHz / 24-bit          [ ] Always on Top │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ GENERATOR                                                    │
+│  [ SINE | SQUARE | PINK | WHITE | SWEEP | CLICK ]  ← signal  │
+│     ⌥S     ⌥Q      ⌥P     ⌥W      ⌥E      ⌥C     ← legends   │
+│  ┌──────────────────────────────────────────────────────┐    │
+│  │                 ● OFF  [Space]                        │    │  ← big toggle
+│  └──────────────────────────────────────────────────────┘    │
+│      [ FULL-RANGE | BAND-LIMITED | 1/3-OCTAVE ]              │  ← noise mode (Pink/White only; reserved otherwise)
+│  Frequency:  [ 1000 ▾] Hz   [◀][▶]                           │  ← shared slot: Frequency / Range /
+│                              ←   →                           │     Duration / Interval, or empty
+│              [ low ] – [ high ]                              │  ← manual range (Band-limited › Manual only)
+│  Level:      [ -20 ] dBFS   [+] ↑                            │
+│                             [-] ↓                            │
+├──────────────────────────────────────────────────────────────┤
+│ OUTPUT                                                       │
+│  Output Device:  [ MOTU 8A ▾ ]                               │
+│  [Mute All ⌥M]                                               │
+│  CH1 [Mute] 1 [Ø] ⌥1   CH2 [Mute] 2 [Ø] ⌥2   ...  ← scroll   │
+├──────────────────────────────────────────────────────────────┤
+│  48.0 kHz / 24-bit            [Dark ▾]   [ ] Always on Top   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-GENERATOR and OUTPUT are titled panel groupings (tracked all-caps labels, subtle background fill) — not decoration, they separate "what's being generated" from "where it's going." Frequency's prev/next chevrons and Level's +/- both sit to the right of their value, ordered to match their keyboard shortcuts: chevrons left-then-right (matching ←/→), +/- stacked with + on top (matching ↑/↓ — up increases). All four stepper buttons share one explicit size so they read as one control family. See "Visual design" below for the full rationale.
+Every row is reserved whether or not it currently applies (hidden + disabled, never removed), so the fixed-size window never reflows on a signal-type or noise-mode switch.
+
+GENERATOR and OUTPUT are titled panel groupings (tracked all-caps labels, subtle background fill) — not decoration, they separate "what's being generated" from "where it's going." The shared slot's steppers (Frequency's prev/next chevrons, Duration's and Interval's −/+) and Level's +/- both sit to the right of their value, ordered to match their keyboard shortcuts: chevrons left-then-right (matching ←/→), +/- stacked with + on top (matching ↑/↓ — up increases). All four stepper buttons share one explicit size so they read as one control family. See "Visual design" below for the full rationale.
 
 ## Controls
 
@@ -49,25 +61,29 @@ GENERATOR and OUTPUT are titled panel groupings (tracked all-caps labels, subtle
 Fixed-size utility panel, not resizable — 540pt wide since the click generator added a sixth signal-type segment (see the decisions log). Optional user-toggleable "always on top" (off by default) so the panel can stay visible while working elsewhere in the room.
 
 ### Signal type selector
-Segmented control, 3 states (Sine / Pink / White), all options visible at once. Switching while playing **fully stops output** (drops to OFF) — for safety, to avoid unwanted noise from an in-flight transition. The user must press ON again to hear the newly selected signal. See [ADR 0003](adr/0003-signal-switch-forces-stop.md).
+Segmented control, 6 states (Sine / Square / Pink / White / Sweep / Click), all options visible at once, each with an ⌥-letter shortcut printed beneath it (⌥S ⌥Q ⌥P ⌥W ⌥E ⌥C). The picker and its legend row are sized to the picker's natural width, so the window must stay wide enough to fit it (see "Window sizing" in the decisions log). Switching while playing **fully stops output** (drops to OFF) — for safety, to avoid unwanted noise from an in-flight transition. The user must press ON again to hear the newly selected signal. See [ADR 0003](adr/0003-signal-switch-forces-stop.md).
 
 ### Big On/Off switch
 - Spacebar toggles globally, except while a text field is actively being edited.
 - On launch, no field is pre-focused — otherwise AppKit's default first-responder behavior auto-focuses the frequency field (the first key-capable control), silently swallowing the very first spacebar press as a typed space instead of starting the generator. `WindowAccessor` explicitly resigns focus to the window's content view once, right after the window is created.
+- Linear ~15ms gain ramp on start/stop (applied inside the render block) to avoid click artifacts — matters since users are driving real speakers. Same ramp is used for the forced stop triggered by a signal-type switch.
+- State is shown via **both** color and an explicit text label ("ON"/"OFF") — never color alone. Running state uses red (a "live" tally light, `theme.danger`), not green, since this is the state where something is actively happening, not a "safe" state; idle is cyan-outlined ("armed").
 
 ### In-app shortcut help
-No separate help view, button, or menu item. Every control that has a keyboard shortcut (on/off, frequency prev/next, level +/-) carries a native `.help()` tooltip stating its shortcut, shown on hover — the standard macOS mechanism, discoverable exactly where the shortcut applies, with no added UI chrome.
-- Linear ~15ms gain ramp on start/stop (applied inside the render block) to avoid clicks — matters since users are driving real speakers. Same ramp is used for the forced stop triggered by a signal-type switch.
-- State is shown via **both** color and an explicit text label ("ON"/"OFF") — never color alone. Running state uses red/amber (signals "hot"), not green, since this is the state where something is actively happening, not a "safe" state.
+No separate help view, button, or menu item. Shortcuts are discoverable exactly where they apply, two ways:
+- **Printed legends** (#46): each shortcut is printed on or under its control — `Space` on ON/OFF, a faint ⌥-letter row under the signal-type picker, key caps under the shared slot's and Level's steppers (←/→, ↑/↓), `⌥M` on Mute All, and the channel number (Mute) and ⌥-number (Ø) on each of the first ten channels.
+- **Tooltips:** every such control also carries a native `.help()` tooltip stating its shortcut, shown on hover.
 
-### Frequency field (sine only)
+Keyboard map: Space ON/OFF · ⌥S/⌥Q/⌥P/⌥W/⌥E/⌥C signal type · ⌥F/⌥B/⌥O noise mode (Pink/White only) · ←/→ the shared slot's stepper (band, duration, interval) · ↑/↓ Level · `1`–`9`/`0` Mute channels 1–10 · ⌥`1`–`9`/`0` Ø channels 1–10 · ⌥M Mute All / Unmute All. Unmodified digit and ⌥-letter shortcuts are disabled while a numeric field is focused, so typing isn't stolen; ⌥M (the safety action) always fires.
+
+### Frequency field (Sine, Square, and 1/3-Octave noise)
 - Range 20Hz-20kHz, free text entry, default 1000Hz.
 - Whole Hz only — typed input is rounded to the nearest integer Hz on commit. (Internal oscillator still uses full float precision; this is a display/entry rule only.) Exception: the 1/3-octave band at 31.5Hz displays as "31.5Hz", not rounded to 32 — it's the fixed ISO 266 standard label, not a typed value.
 - Left/Right arrow keys step to prev/next 1/3-octave value from the canonical ISO 266 31-band list — not prev/next Hz.
 - A dropdown (▾ a borderless `Menu` chevron folded *into* the field's dark LCD panel, so the field + arrow read as one combo box) lists all 31 ISO 266 bands for direct picking — combo-box behavior: type any value *or* pick a standard band. The same dropdown is offered on the 1/3-Octave noise band field (Pink & White), where picking sets the band index directly. Band labels use raw Hz (e.g. "1000 Hz", "31.5 Hz"), matching the field's own whole-Hz display rule.
 - Typed free-text values don't snap to the 1/3-octave grid; arrows and the dropdown are the only things that land exactly on a band.
 - Clamp to range on commit, reject non-numeric input.
-- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when the signal type isn't sine, so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is a single shared control position, not three parallel reserved rows: Pink 1/3-Octave reuses this exact Frequency control (not a separate band stepper), Pink Band-limited shows a "Range" picker in the same slot instead, and Sweep shows a duration field there — see "Addendum: pink noise modes" and "Addendum: sine sweep".
+- Prev/next chevron buttons sit together to the right of the value, left-then-right, matching the left-arrow/right-arrow shortcuts. Reserved (hidden + disabled, not removed) when nothing occupies it (full-range noise), so the fixed-size GENERATOR panel never reflows on signal-type switch. This reserved slot is a single shared control position (`FrequencySlotContent`), not parallel reserved rows: Sine and Square show this Frequency field; a noise color's 1/3-Octave reuses this exact control (not a separate band stepper); Band-limited shows a "Range" picker in the same slot instead; Sweep shows its Duration field and Click its Interval field there — see the addenda. The slot has a 42pt minimum height so its shorter occupant (the Range menu) doesn't reflow the window.
 
 ### Level field
 - Range: -99 dBFS to 0 dBFS.

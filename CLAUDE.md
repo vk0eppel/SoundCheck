@@ -11,11 +11,20 @@ xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platfo
 xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platform=macOS' test
 ```
 
-To run a single test, filter with `-only-testing`:
+Tests use Swift Testing. **Method-level `-only-testing` filters don't work here** — `-only-testing:SoundCheckTests/SoundCheckTests/<method>` silently runs 0 tests and still prints `TEST SUCCEEDED`. Filter at the target level, write a result bundle, and read pass/fail counts from it (per-test results don't reach xcodebuild's stdout):
 
 ```
-xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platform=macOS' test -only-testing:SoundCheckTests/SoundCheckTests/discoversAtLeastOneOutputDevice
+xcodebuild -project SoundCheck.xcodeproj -scheme SoundCheck -destination 'platform=macOS,arch=arm64' test -only-testing:SoundCheckTests -resultBundlePath /tmp/sc.xcresult
+xcrun xcresulttool get test-results summary --path /tmp/sc.xcresult   # totalTestCount / failedTests / testFailures[].failureText
 ```
+
+`arch=arm64` avoids xcodebuild's "multiple matching destinations" pick on a universal-build project.
+
+## Releases
+
+Cut locally, not in CI: `scripts/release.sh vX.Y.Z` builds a signed (Apple Development identity + hardened runtime, **not notarized**) universal arm64+x86_64 Release into `dist/`, verifying signature and architectures; add `--publish` to create the tag + GitHub release (auto-generated notes) and upload the zip. The GitHub `release.yml` workflow is manual-only and produces an *unsigned* build. Versions are `v0.MINOR.PATCH` git tags (v0.3.0 bumped minor for the Click signal type).
+
+PRs are squash-merged. **Stacked PRs:** merging the lower PR with "delete branch" makes GitHub *close* (not retarget) any PR based on that branch, and it can't be reopened once its head is rebased/force-pushed. Retarget the stacked PR to `main` *before* deleting the lower branch.
 
 The project uses `PBXFileSystemSynchronizedRootGroup` (Xcode 16+ synchronized folders) — new files dropped into `SoundCheck/`, `SoundCheckTests/`, or `SoundCheckUITests/` are picked up automatically, no `project.pbxproj` edits needed.
 
