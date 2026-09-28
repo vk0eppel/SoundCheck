@@ -81,6 +81,31 @@ struct SoundCheckTests {
         #expect(secondLaunch.snapshot.pinkNoiseMode == .bandLimited(.preset200HzTo1kHz))
     }
 
+    /// A snapshot saved by an older build lacks fields added since (e.g. `clickIntervalSeconds`).
+    /// It must still load, keeping every field it does have and defaulting the missing ones,
+    /// rather than failing to decode and silently resetting all of the user's settings.
+    @MainActor
+    @Test func snapshotFromAnOlderBuildMissingNewerFieldsStillLoads() async throws {
+        let suiteName = "SettingsStoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let olderJSON = #"""
+            {"signalType":"SWEEP","frequencyHz":630,"levelDbfs":-12,"selectedDeviceUID":"device-uid-1",
+             "channelStatesByDeviceUID":{},"pinkNoiseMode":{"fullRange":{}},"whiteNoiseMode":{"fullRange":{}},
+             "sweepDurationSeconds":7}
+            """#
+        defaults.set(Data(olderJSON.utf8), forKey: "com.soundcheck.settings.v1")
+
+        let snapshot = SettingsStore(defaults: defaults).snapshot
+        #expect(snapshot.signalType == .sweep)
+        #expect(snapshot.frequencyHz == 630)
+        #expect(snapshot.levelDbfs == -12)
+        #expect(snapshot.selectedDeviceUID == "device-uid-1")
+        #expect(snapshot.sweepDurationSeconds == 7)
+        #expect(snapshot.clickIntervalSeconds == SettingsSnapshot().clickIntervalSeconds)
+    }
+
     @MainActor
     @Test func unknownDeviceChannelsDefaultToMuted() async throws {
         let suiteName = "SettingsStoreTests.\(UUID().uuidString)"
@@ -142,10 +167,14 @@ struct SoundCheckTests {
             $0.levelDbfs = -12.5
             $0.pinkNoiseMode = .bandLimited(.preset200HzTo1kHz)
             $0.sweepDurationSeconds = 5
+            $0.clickIntervalSeconds = 0.7
         }
 
         let renderCore = SignalRenderCore()
         let settings = SignalSettings(renderCore: renderCore, settingsStore: store)
+
+        #expect(settings.clickIntervalSeconds == 0.7)
+        #expect(renderCore.parameters.clickIntervalSeconds == 0.7)
 
         #expect(settings.signalType == .pink)
         #expect(settings.frequencyHz == 630)
@@ -167,6 +196,7 @@ struct SoundCheckTests {
         settings.frequencyHz = 250
         settings.levelDbfs = -6
         settings.sweepDurationSeconds = 20
+        settings.clickIntervalSeconds = 2.5
 
         #expect(renderCore.parameters.frequencyHz == 250)
         #expect(store.snapshot.frequencyHz == 250)
@@ -174,6 +204,8 @@ struct SoundCheckTests {
         #expect(store.snapshot.levelDbfs == -6)
         #expect(renderCore.parameters.sweepDurationSeconds == 20)
         #expect(store.snapshot.sweepDurationSeconds == 20)
+        #expect(renderCore.parameters.clickIntervalSeconds == 2.5)
+        #expect(store.snapshot.clickIntervalSeconds == 2.5)
     }
 
     @MainActor
@@ -1075,6 +1107,164 @@ struct SoundCheckTests {
         let inputRMS = (inputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
         let outputRMS = (outputSumSquares / Double(totalSamples - settleSamples)).squareRoot()
         return outputRMS / inputRMS
+    }
+
+    // MARK: Click
+
+    /// A Click core at 0 dBFS (so a pulse's peak reads directly as 1.0) on one unmuted
+    /// channel, already switched to `.click` and running. `.click` is adopted on the first
+    /// ON frame (`rampGain == 0`), which is also when `reset()` primes the first pulse.
+    private static func makeRunningClickCore(intervalSeconds: Double) -> SignalRenderCore {
+        let core = SignalRenderCore()
+        core.updateParameters {
+            $0.generatorKind = .click
+            $0.clickIntervalSeconds = intervalSeconds
+            $0.levelDbfs = 0
+            $0.running = true
+            $0.channelMuted = [false]
+            $0.channelPhaseReversed = [false]
+        }
+        return core
+    }
+
+    /// One pulse per contiguous run of non-zero samples: where it starts, how many samples it
+    /// spans, and the index/value of its peak.
+    private struct DetectedPulse {
+        var start: Int
+        var length: Int
+        var peakIndex: Int
+        var peak: Float
+        var sum: Double
+    }
+
+    private static func detectPulses(in samples: [Float]) -> [DetectedPulse] {
+        var pulses: [DetectedPulse] = []
+        var current: DetectedPulse?
+        for (index, sample) in samples.enumerated() {
+            if sample != 0 {
+                if current == nil {
+                    current = DetectedPulse(start: index, length: 0, peakIndex: index, peak: sample, sum: 0)
+                }
+                current!.length += 1
+                current!.sum += Double(sample)
+                if sample > current!.peak {
+                    current!.peak = sample
+                    current!.peakIndex = index
+                }
+            } else if let finished = current {
+                pulses.append(finished)
+                current = nil
+            }
+        }
+        if let current { pulses.append(current) }
+        return pulses
+    }
+
+    @Test func clickFiresFirstPulseJustAfterTheStartRampThenEveryInterval() async throws {
+        let sampleRate = 48000.0
+        let core = Self.makeRunningClickCore(intervalSeconds: 0.5)
+
+        let samples = Self.renderToArrays(core, frameCount: Int(1.6 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let pulses = Self.detectPulses(in: samples)
+
+        #expect(pulses.count == 4)
+        // First pulse lands ~20ms after ON — after the 15ms start ramp has completed, so it
+        // plays at full level rather than being swallowed by the fade-in.
+        let firstPeakSeconds = Double(pulses[0].peakIndex) / sampleRate
+        #expect(firstPeakSeconds > 0.015 && firstPeakSeconds < 0.025)
+        #expect(abs(pulses[0].peak - 1) < 1e-6)
+        // Every later pulse is exactly one interval after the previous one.
+        for (previous, next) in zip(pulses, pulses.dropFirst()) {
+            #expect(next.peakIndex - previous.peakIndex == Int(0.5 * sampleRate))
+        }
+    }
+
+    @Test func clickPulseIsAPositiveHannPulsePeakingAtLevelAtEverySampleRate() async throws {
+        for sampleRate in [44100.0, 48000.0, 96000.0] {
+            let core = Self.makeRunningClickCore(intervalSeconds: 1)
+            core.updateParameters { $0.levelDbfs = -20 }
+            let samples = Self.renderToArrays(core, frameCount: Int(0.1 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+            let pulses = Self.detectPulses(in: samples)
+
+            #expect(pulses.count == 1, "at \(sampleRate)Hz")
+            let pulse = try #require(pulses.first)
+            // Level is the pulse's peak, not RMS: -20 dBFS peaks at exactly 0.1.
+            #expect(abs(pulse.peak - 0.1) < 1e-6, "at \(sampleRate)Hz")
+            #expect(samples.allSatisfy { $0 >= 0 }, "positive-going at \(sampleRate)Hz")
+            // ~0.2ms wide regardless of sample rate.
+            let widthSeconds = Double(pulse.length) / sampleRate
+            #expect(abs(widthSeconds - 0.0002) <= 1.5 / sampleRate, "at \(sampleRate)Hz")
+            // Same continuous shape at every rate: a Hann pulse's area is width/2 * peak.
+            let area = pulse.sum / sampleRate
+            #expect(abs(area - 0.0001 * 0.1) / (0.0001 * 0.1) < 0.02, "at \(sampleRate)Hz")
+        }
+    }
+
+    @Test func clickShortenedIntervalAlreadyElapsedFiresImmediately() async throws {
+        let sampleRate = 48000.0
+        let core = Self.makeRunningClickCore(intervalSeconds: 2)
+        // Past the first pulse (~20ms) and 0.5s further, well short of the 2s interval.
+        let before = Self.renderToArrays(core, frameCount: Int(0.52 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let firstPeak = try #require(Self.detectPulses(in: before).first).peakIndex
+
+        core.updateParameters { $0.clickIntervalSeconds = 0.3 }
+        let after = Self.renderToArrays(core, frameCount: Int(0.5 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let pulses = Self.detectPulses(in: after)
+
+        // 0.3s after the last pulse has already passed, so the next one fires right away
+        // (not on the old 2s schedule), and the new interval runs from there.
+        #expect(pulses.count == 2)
+        let nextPeakSeconds = Double(before.count + pulses[0].peakIndex - firstPeak) / sampleRate
+        #expect(abs(nextPeakSeconds - 0.5) < 0.005)
+        #expect(pulses[1].peakIndex - pulses[0].peakIndex == Int(0.3 * sampleRate))
+    }
+
+    @Test func clickLengthenedIntervalCountsFromTheLastPulse() async throws {
+        let sampleRate = 48000.0
+        let core = Self.makeRunningClickCore(intervalSeconds: 0.5)
+        let before = Self.renderToArrays(core, frameCount: Int(0.2 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let firstPeak = try #require(Self.detectPulses(in: before).first).peakIndex
+
+        core.updateParameters { $0.clickIntervalSeconds = 1.2 }
+        let after = Self.renderToArrays(core, frameCount: Int(1.5 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let pulses = Self.detectPulses(in: after)
+
+        #expect(pulses.count == 1)
+        let nextPulse = try #require(pulses.first)
+        let nextPeak = before.count + nextPulse.peakIndex
+        #expect(nextPeak - firstPeak == Int(1.2 * sampleRate))
+    }
+
+    @Test func clickIntervalCommitSnapsToTenthsAndClampsToRange() async throws {
+        #expect(ClickInterval.committed(1.37) == 1.4)
+        #expect(ClickInterval.committed(0.25) == 0.3)
+        #expect(ClickInterval.committed(0.05) == 0.2)
+        #expect(ClickInterval.committed(9) == 3.0)
+        #expect(ClickInterval.stepped(from: 1.0, by: -1) == 0.9)
+        #expect(ClickInterval.stepped(from: 0.2, by: -1) == 0.2)
+        #expect(ClickInterval.stepped(from: 2.9, by: 1) == 3.0)
+        #expect(ClickInterval.stepped(from: 3.0, by: 1) == 3.0)
+        // Ten 0.1s steps land back on an exact value, with no accumulated float drift.
+        var value = ClickInterval.defaultSeconds
+        for _ in 0..<10 { value = ClickInterval.stepped(from: value, by: 1) }
+        #expect(value == 2.0)
+    }
+
+    @Test func clickRestartsWithAPromptFirstPulseAfterAFullStop() async throws {
+        let sampleRate = 48000.0
+        let core = Self.makeRunningClickCore(intervalSeconds: 3)
+        _ = Self.renderToArrays(core, frameCount: Int(1 * sampleRate), channelCount: 1, sampleRate: sampleRate)
+
+        core.updateParameters { $0.running = false }
+        _ = Self.renderToArrays(core, frameCount: Int(0.05 * sampleRate), channelCount: 1, sampleRate: sampleRate)
+
+        // Without a reset the next pulse would be ~2s away (3s interval, 1s elapsed).
+        core.updateParameters { $0.running = true }
+        let samples = Self.renderToArrays(core, frameCount: Int(0.1 * sampleRate), channelCount: 1, sampleRate: sampleRate)[0]
+        let pulse = try #require(Self.detectPulses(in: samples).first)
+        let peakSeconds = Double(pulse.peakIndex) / sampleRate
+        #expect(peakSeconds > 0.015 && peakSeconds < 0.025)
+        #expect(abs(pulse.peak - 1) < 1e-6)
     }
 
     /// Estimates instantaneous frequency from positive-going zero-crossing spacing in a

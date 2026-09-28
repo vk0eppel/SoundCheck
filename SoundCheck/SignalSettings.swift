@@ -93,6 +93,14 @@ final class SignalSettings {
         }
     }
 
+    var clickIntervalSeconds: Double {
+        didSet {
+            guard clickIntervalSeconds != oldValue else { return }
+            renderCore.updateParameters { $0.clickIntervalSeconds = clickIntervalSeconds }
+            settingsStore.update { $0.clickIntervalSeconds = clickIntervalSeconds }
+        }
+    }
+
     var channels: [Channel] {
         didSet {
             guard channels != oldValue else { return }
@@ -107,7 +115,7 @@ final class SignalSettings {
     }
 
     /// Seeds every owned property from `settingsStore.snapshot` and immediately pushes that
-    /// same snapshot into `renderCore` — replacing `ContentView.onAppear`'s manual 7-field
+    /// same snapshot into `renderCore` — replacing `ContentView.onAppear`'s manual field-by-field
     /// unpack. `renderCore`/`settingsStore` are injected, not created, matching
     /// `AudioEngineController`/`SettingsStore`'s existing pattern.
     init(renderCore: SignalRenderCore, settingsStore: SettingsStore) {
@@ -122,6 +130,7 @@ final class SignalSettings {
         pinkNoiseMode = snapshot.pinkNoiseMode
         whiteNoiseMode = snapshot.whiteNoiseMode
         sweepDurationSeconds = snapshot.sweepDurationSeconds
+        clickIntervalSeconds = snapshot.clickIntervalSeconds
         channels = []
 
         renderCore.updateParameters {
@@ -131,6 +140,7 @@ final class SignalSettings {
             $0.pinkNoiseMode = snapshot.pinkNoiseMode
             $0.whiteNoiseMode = snapshot.whiteNoiseMode
             $0.sweepDurationSeconds = snapshot.sweepDurationSeconds
+            $0.clickIntervalSeconds = snapshot.clickIntervalSeconds
         }
     }
 

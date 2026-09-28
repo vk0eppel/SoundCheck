@@ -4,7 +4,7 @@ A signal generator utility for macOS, to help sound engineers, audio technicians
 
 ## Status
 
-Signal types: sine, square, pink noise, white noise, and a logarithmic sine sweep. Pink and White each offer full-range, band-limited (presets or a manual range), and 1/3-octave (31 ISO 266 bands) modes. All of them are wired end-to-end to a real `AVAudioEngine` graph, with live Core Audio device enumeration, per-channel mute/phase, a live sample rate/bit depth display, and persisted settings. See [`docs/spec.md`](docs/spec.md) for the complete spec.
+Signal types: sine, square, pink noise, white noise, a logarithmic sine sweep, and a repeating click for checking delay alignment between speakers. Pink and White each offer full-range, band-limited (presets or a manual range), and 1/3-octave (31 ISO 266 bands) modes. All of them are wired end-to-end to a real `AVAudioEngine` graph, with live Core Audio device enumeration, per-channel mute/phase, a live sample rate/bit depth display, and persisted settings. See [`docs/spec.md`](docs/spec.md) for the complete spec.
 
 ## Requirements
 
@@ -28,7 +28,7 @@ Signal types: sine, square, pink noise, white noise, and a logarithmic sine swee
 ## Running
 
 1. Launch SoundCheck and pick your **Output Device**.
-2. Choose a signal type (**sine**, **square**, **pink**, **white**, or **sweep**), set its frequency, noise mode, or sweep duration as applicable, set the level, and flip the generator **On**.
+2. Choose a signal type (**sine**, **square**, **pink**, **white**, **sweep**, or **click**), set its frequency, noise mode, sweep duration, or click interval as applicable, set the level, and flip the generator **On**.
 3. Use the per-channel **mute / phase** controls to send the signal where you need it.
 
 ## Building and testing
