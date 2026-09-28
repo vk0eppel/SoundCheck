@@ -2,6 +2,8 @@
 
 A signal generator utility for macOS, to help sound engineers, audio technicians and audiophiles test sound recording and reproduction equipment. Generates test signals only — SoundCheck is not an audio analyser and never captures or measures audio.
 
+Every control has a keyboard shortcut, printed right on the control, so you can run a whole sound check from the keyboard and keep your attention on your ears. Project page: [vkoeppel.free.fr/soundcheck](http://vkoeppel.free.fr/soundcheck).
+
 ## Status
 
 Signal types: sine, square, pink noise, white noise, a logarithmic sine sweep, and a repeating click for checking delay alignment between speakers. Pink and White each offer full-range, band-limited (presets or a manual range), and 1/3-octave (31 ISO 266 bands) modes. All of them are wired end-to-end to a real `AVAudioEngine` graph, with live Core Audio device enumeration, per-channel mute/phase, a live sample rate/bit depth display, and persisted settings. See [`docs/spec.md`](docs/spec.md) for the complete spec.
