@@ -4,9 +4,7 @@ A signal generator utility for macOS, to help sound engineers, audio technicians
 
 ## Status
 
-V1 is built: sine wave, pink noise, and white noise generators, with the full UI chrome (on/off, frequency field, level field, output device picker, per-channel mute/phase, live sample rate/bit depth display) wired end-to-end to a real `AVAudioEngine` graph, live Core Audio device enumeration, and persisted settings. See [`docs/v1-spec.md`](docs/v1-spec.md) for the complete spec and the [SoundCheck V1 map](https://github.com/vk0eppel/SoundCheck/issues/1) (closed) for how it was built.
-
-V2 is in progress on the [V2 map](https://github.com/vk0eppel/SoundCheck/issues/12). Done so far: band-limited pink noise (5 presets + manual range) and 1/3-octave pink noise (31 ISO 266 bands), both live as sub-modes of the Pink signal type. Sine sweep and square wave are still being built out — see the map for current status.
+Signal types: sine, square, pink noise, white noise, and a logarithmic sine sweep. Pink and White each offer full-range, band-limited (presets or a manual range), and 1/3-octave (31 ISO 266 bands) modes. All of them are wired end-to-end to a real `AVAudioEngine` graph, with live Core Audio device enumeration, per-channel mute/phase, a live sample rate/bit depth display, and persisted settings. See [`docs/spec.md`](docs/spec.md) for the complete spec.
 
 ## Requirements
 
@@ -30,7 +28,7 @@ V2 is in progress on the [V2 map](https://github.com/vk0eppel/SoundCheck/issues/
 ## Running
 
 1. Launch SoundCheck and pick your **Output Device**.
-2. Choose a signal type (**sine**, **pink**, or **white**), set the frequency (sine) and level, and flip the generator **On**.
+2. Choose a signal type (**sine**, **square**, **pink**, **white**, or **sweep**), set its frequency, noise mode, or sweep duration as applicable, set the level, and flip the generator **On**.
 3. Use the per-channel **mute / phase** controls to send the signal where you need it.
 
 ## Building and testing
@@ -44,15 +42,14 @@ Or open `SoundCheck.xcodeproj` in Xcode and use Cmd-R / Cmd-U. Requires Xcode (S
 
 ## Documentation
 
-- [`docs/v1-spec.md`](docs/v1-spec.md) — the V1 feature spec: signal types, screen layout, control behaviors, audio engine architecture, and the full decisions log.
+- [`docs/spec.md`](docs/spec.md) — the feature spec: signal types, screen layout, control behaviors, audio engine architecture, and the full decisions log.
 - [`CONTEXT.md`](CONTEXT.md) — domain glossary.
 - [`docs/adr/`](docs/adr) — architecture decision records.
 - [`docs/research/`](docs/research) — research writeups backing specific technical decisions.
 
 ## Roadmap
 
-- **V1:** sine, pink noise, white noise. Done.
-- **V2:** band-limited pink noise (done), 1/3-octave pink noise (31 standard ISO 266 bands, done), sine sweeps (in progress), square wave (not started).
+Feature work is planned on [GitHub Issues](https://github.com/vk0eppel/SoundCheck/issues).
 
 Out of scope: any audio analysis, metering, or capture.
 

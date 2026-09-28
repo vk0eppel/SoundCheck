@@ -1,6 +1,6 @@
 # Shared design tokens with FreqTrace, and owning appearance instead of following the system
 
-Originally (V1 "Visual design", `docs/v1-spec.md`), SoundCheck deliberately **followed the system light/dark appearance automatically** — the identity came from typography, proportion, and one signature accent (`Color.soundCheckAmber`, plus the always-dark `Color.soundCheckLCDPanel` as the single narrow exception), never from an app-owned theme. That stance is reversed here.
+Originally ("Visual design", `docs/spec.md`), SoundCheck deliberately **followed the system light/dark appearance automatically** — the identity came from typography, proportion, and one signature accent (`Color.soundCheckAmber`, plus the always-dark `Color.soundCheckLCDPanel` as the single narrow exception), never from an app-owned theme. That stance is reversed here.
 
 ## Decision
 

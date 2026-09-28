@@ -23,7 +23,7 @@ struct SettingsSnapshot: Codable, Equatable {
     var sweepDurationSeconds: Double = 10
 }
 
-/// Persists SoundCheck's last-used settings across launches, per docs/v1-spec.md's
+/// Persists SoundCheck's last-used settings across launches, per docs/spec.md's
 /// "Persistence" section. Device selection and per-channel mute/phase are keyed by
 /// device UID (not index or name), so they survive the device list reordering.
 @MainActor

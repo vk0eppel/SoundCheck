@@ -17,7 +17,7 @@ import AppKit
 /// Bridges `NoiseMode`'s associated-value cases to something SwiftUI's segmented/menu
 /// pickers can drive, and back — one instance per noise color (Pink and White each hold
 /// their own in `ContentView`, so each color's sub-mode selection persists independently;
-/// see docs/v1-spec.md's V2 addendum). Owns the *committed* sub-selection only; transient
+/// see docs/spec.md's pink noise modes addendum). Owns the *committed* sub-selection only; transient
 /// per-keystroke draft text for the manual-range/1/3-octave fields stays outside, as
 /// `ContentView`-only `@State`, since it's UI-input-lifecycle state (avoiding an audible
 /// mid-keystroke filter-coefficient hot-swap — see docs/research/band-limited-noise-generation.md's
