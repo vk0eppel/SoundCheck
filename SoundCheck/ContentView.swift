@@ -119,12 +119,13 @@ private enum ManualRangeField: Hashable {
     case high
 }
 
-/// Identifies which of the Frequency/Level/Duration fields currently has focus, so Return
-/// can resign it and hand keyboard focus back to the app (see `editableFieldFocus`).
+/// Identifies which of the Frequency/Level/Duration/Interval fields currently has focus, so
+/// Return can resign it and hand keyboard focus back to the app (see `editableFieldFocus`).
 private enum EditableField: Hashable {
     case frequency
     case level
     case duration
+    case interval
 }
 
 /// The one deliberate carve-out from the shared `Theme` (ADR 0005): the numeric readout's
@@ -243,7 +244,7 @@ private struct SolidToggleStyle: ToggleStyle {
     }
 }
 
-/// SoundCheck's numeric-readout treatment for Frequency/Level/Duration/manual-range fields —
+/// SoundCheck's numeric-readout treatment for Frequency/Level/Duration/Interval/manual-range fields —
 /// a dark inset panel with a hairline glow echoing the ON/OFF button's cyan accent
 /// (`onOffButton`), since these fields are the closest thing in the design to an actual
 /// instrument's numeric display. Deliberately dark regardless of system appearance, the same
@@ -320,8 +321,12 @@ struct ContentView: View {
     // it, pressing Return has nothing to resign, and the field keeps first-responder
     // status indefinitely -- silently swallowing the space/arrow-key shortcuts below
     // (AppKit routes those to the focused text field, not up to the app) until the user
-    // manually clicks elsewhere.
+    // manually clicks elsewhere. Click's Interval field shares this focus tracking but, unlike
+    // the other three, commits on blur (see `clickIntervalDraft`).
     @FocusState private var editableFieldFocus: EditableField?
+    // Click's Interval field text, committed (snapped to 0.1s and clamped) on Return/blur
+    // rather than live, so typing "2.5" never briefly applies "2." — see `intervalControl`.
+    @State private var clickIntervalDraft: Double = ClickInterval.defaultSeconds
     @State private var selectedDeviceUID: String?
     @State private var showsDeviceDisconnectedAlert = false
 
@@ -359,7 +364,7 @@ struct ContentView: View {
 
     /// What the shared frequency-like slot should render right now — Sine/Square's frequency
     /// field, noise Band-limited's "Range" picker, noise 1/3-Octave's band field, Sweep's
-    /// duration field, or nothing (full-range noise, where frequency doesn't mean anything).
+    /// duration field, Click's interval field, or nothing (full-range noise, where frequency doesn't mean anything).
     /// The one source of truth both `frequencyOrRangeControl`'s dispatch and
     /// `frequencySlotVisible` read directly, instead of each re-deriving the same
     /// noise-family/signal-type condition independently the way `frequencyOrRangeControl`'s
@@ -369,6 +374,7 @@ struct ContentView: View {
         case range
         case thirdOctave
         case duration
+        case interval
         case hidden
     }
 
@@ -381,6 +387,8 @@ struct ContentView: View {
             .hidden
         } else if signalSettings.signalType == .sweep {
             .duration
+        } else if signalSettings.signalType == .click {
+            .interval
         } else {
             .frequency
         }
@@ -413,6 +421,9 @@ struct ContentView: View {
                         }
                         .pickerStyle(.segmented)
                         .tint(theme.accent)
+                        // No reserved (empty) label space, so the drawn control fills exactly
+                        // the frame the legend row below measures against.
+                        .labelsHidden()
 
                         // A silkscreened legend row tucked under the picker, one ⌥-letter per
                         // segment. Deliberately box-less faint text (not KeyCap) so it reads as
@@ -428,7 +439,14 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .help("Signal type — ⌥S Sine · ⌥Q Square · ⌥P Pink · ⌥W White · ⌥E Sweep")
+                    // Sized to the picker's natural width, so the legend's equal columns span
+                    // exactly its equal-width segments. Don't let the picker be squeezed below
+                    // that instead: AppKit still draws it at natural width once a later layout
+                    // pass (e.g. the noise-mode picker enabling on a switch to Pink/White)
+                    // re-measures it, overflowing the panel and misaligning the legends. The
+                    // window width is chosen so this natural width fits (see docs/spec.md).
+                    .fixedSize(horizontal: true, vertical: false)
+                    .help("Signal type — ⌥S Sine · ⌥Q Square · ⌥P Pink · ⌥W White · ⌥E Sweep · ⌥C Click")
                     .onChange(of: signalSettings.signalType) { _, _ in
                         // Resync the transient draft text to whichever color is now active --
                         // `thirdOctaveFrequencyControl`'s own `onAppear` resync (below) covers
@@ -457,6 +475,10 @@ struct ContentView: View {
                     // same control, not three near-duplicates stacked invisibly on top of
                     // each other.
                     frequencyOrRangeControl
+                        // Every occupant is 42pt tall (field + steppers with key caps below)
+                        // except Band-limited's Range menu (24pt) — without a floor the slot
+                        // shrinks there and Level and the whole window reflow upward.
+                        .frame(minHeight: 42)
                         .opacity(frequencySlotVisible ? 1 : 0)
                         .disabled(!frequencySlotVisible)
 
@@ -499,7 +521,7 @@ struct ContentView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 540)
         // The lighter console chassis the dark GENERATOR/OUTPUT wells recess into, mirroring
         // FreqTrace's meter-panel-on-surfaceRaised layering (ADR 0005).
         .background(theme.surfaceRaised)
@@ -623,6 +645,7 @@ struct ContentView: View {
         case .range: rangeControl
         case .thirdOctave: thirdOctaveFrequencyControl
         case .duration: durationControl
+        case .interval: intervalControl
         case .frequency, .hidden: frequencyControl
         }
     }
@@ -821,6 +844,45 @@ struct ContentView: View {
         }
     }
 
+    /// Click's interval between pulses, in the shared slot. Same shape as `durationControl`
+    /// (←/→ steppers, since ↑/↓ belong to Level), but typed text commits on Return/blur via
+    /// `clickIntervalDraft` — snapped to 0.1s and clamped to `ClickInterval.range` — so the
+    /// readout always stays on the same 0.1s grid the arrows step on. The arrows apply live;
+    /// a running click picks up the new interval measured from its last pulse.
+    private var intervalControl: some View {
+        HStack {
+            Text("Interval")
+
+            TextField("s", value: $clickIntervalDraft, format: .number.grouping(.never).precision(.fractionLength(1)))
+                .font(.system(.body, design: .monospaced))
+                .multilineTextAlignment(.center)
+                .lcdFieldStyle()
+                .frame(width: 70)
+                .focused($editableFieldFocus, equals: .interval)
+                .onSubmit {
+                    commitClickIntervalDraft()
+                    editableFieldFocus = nil
+                }
+            Text("s")
+                .foregroundStyle(theme.textDim)
+
+            HStack(spacing: 4) {
+                arrowStepper(systemImage: "minus", key: .leftArrow, cap: "←",
+                             help: "Decrease interval by 0.1s (←)", capBelow: true) { stepClickInterval(-1) }
+                arrowStepper(systemImage: "plus", key: .rightArrow, cap: "→",
+                             help: "Increase interval by 0.1s (→)", capBelow: true) { stepClickInterval(1) }
+            }
+            .buttonStyle(.bordered)
+        }
+        .onChange(of: editableFieldFocus) { oldValue, newValue in
+            if oldValue == .interval && newValue != .interval { commitClickIntervalDraft() }
+        }
+        .onChange(of: signalSettings.clickIntervalSeconds) { _, newValue in
+            clickIntervalDraft = newValue
+        }
+        .onAppear { clickIntervalDraft = signalSettings.clickIntervalSeconds }
+    }
+
     private var levelControl: some View {
         @Bindable var signalSettings = signalSettings
         return HStack {
@@ -929,13 +991,21 @@ struct ContentView: View {
         .help("Pick a 1/3-octave band")
     }
 
+    /// Label and menu laid out explicitly rather than via the picker's built-in label: a menu
+    /// picker caps its own width, and past that cap the built-in label+control pair centers in
+    /// the row, drifting the label off the panel's leading edge.
     private var devicePicker: some View {
-        Picker("Output Device", selection: $selectedDeviceUID) {
-            ForEach(deviceCatalog.devices) { device in
-                Text(device.name).tag(Optional(device.uid))
+        HStack {
+            Text("Output Device")
+            Picker("Output Device", selection: $selectedDeviceUID) {
+                ForEach(deviceCatalog.devices) { device in
+                    Text(device.name).tag(Optional(device.uid))
+                }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .pickerStyle(.menu)
     }
 
     /// A single bulk-mute toggle (⌥M), visible above the channel row so the safety-relevant
@@ -1074,7 +1144,7 @@ struct ContentView: View {
         }
     }
 
-    /// The ⌥-letter key for a signal type — mnemonic where possible (Sine/Pink/White), with the
+    /// The ⌥-letter key for a signal type — mnemonic where possible (Sine/Pink/White/Click), with the
     /// two other S-words disambiguated: sQuare, swEep.
     private static func signalTypeShortcutKey(_ type: GeneratorKind) -> KeyEquivalent {
         switch type {
@@ -1083,6 +1153,7 @@ struct ContentView: View {
         case .pink: "p"
         case .white: "w"
         case .sweep: "e"
+        case .click: "c"
         }
     }
 
@@ -1141,7 +1212,7 @@ struct ContentView: View {
     }
 
     /// True while any editable numeric field holds keyboard focus — the gate that keeps the
-    /// number-key Mute shortcuts from swallowing digits meant for Frequency/Level/Duration or
+    /// number-key Mute shortcuts from swallowing digits meant for Frequency/Level/Duration/Interval or
     /// the manual-range/1-3-octave fields.
     private var anyFieldFocused: Bool {
         editableFieldFocus != nil || manualRangeFieldFocus != nil || thirdOctaveFieldFocused
@@ -1181,6 +1252,17 @@ struct ContentView: View {
 
     private func adjustLevel(_ direction: Int) {
         signalSettings.levelDbfs = min(max(signalSettings.levelDbfs + Double(direction), -99), 0)
+    }
+
+    private func stepClickInterval(_ direction: Int) {
+        signalSettings.clickIntervalSeconds = ClickInterval.stepped(from: signalSettings.clickIntervalSeconds, by: direction)
+    }
+
+    private func commitClickIntervalDraft() {
+        signalSettings.clickIntervalSeconds = ClickInterval.committed(clickIntervalDraft)
+        // Resync explicitly: if the snapped value equals the current one, the onChange above
+        // doesn't fire and the field would keep showing the un-snapped typed text.
+        clickIntervalDraft = signalSettings.clickIntervalSeconds
     }
 
     private func adjustSweepDuration(_ direction: Int) {
